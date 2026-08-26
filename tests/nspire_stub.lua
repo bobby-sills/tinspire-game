@@ -1,0 +1,184 @@
+-- A stand-in for the TI-Nspire Lua runtime, strict enough to catch API misuse.
+--
+-- The calculator silently ignores a bad drawing call, so a typo or an
+-- out-of-range colour shows up on hardware as "the screen looks wrong" with no
+-- error to chase. This mock asserts on anything the real API would reject,
+-- which lets tests/run_ui.lua drive the real bundle and fail loudly instead.
+
+local stub = {}
+
+-- Optional: measured font metrics from tools/fontmetrics.py. Present only
+-- after `make screenshots`; the mock falls back to an estimate without it.
+do
+  local loaded, metrics = pcall(require, "metrics")
+  stub.metrics = loaded and metrics or nil
+end
+
+-- Values the Nspire's own font machinery accepts.
+local FONT_FAMILIES = { sansserif = true, serif = true, mono = true }
+local FONT_STYLES   = { r = true, b = true, i = true, bi = true }
+local FONT_SIZES    = { [7]=true, [9]=true, [10]=true, [11]=true, [12]=true, [16]=true, [24]=true }
+local PEN_SIZES     = { thin = true, medium = true, thick = true }
+local PEN_STYLES    = { smooth = true, dotted = true, dashed = true }
+local ANCHORS       = { top = true, middle = true, baseline = true }
+
+local function num(v, what, call)
+  assert(type(v) == "number", call .. ": " .. what .. " must be a number, got " .. type(v))
+  assert(v == v and v ~= math.huge and v ~= -math.huge, call .. ": " .. what .. " must be finite")
+  return v
+end
+
+local function byte(v, what, call)
+  num(v, what, call)
+  assert(v >= 0 and v <= 255, string.format("%s: %s out of 0..255 (%s)", call, what, tostring(v)))
+  assert(math.floor(v) == v, string.format("%s: %s must be an integer (%s)", call, what, tostring(v)))
+end
+
+-- Returns a mock graphics context, a table of call counts, and an ordered log
+-- of the drawing operations. The log is what tools/screenshot.lua replays to
+-- turn a real frame into a PNG.
+function stub.newGC()
+  local calls = setmetatable({}, { __index = function() return 0 end })
+  local ops = {}
+  local gc = { _color = { 0, 0, 0 } }
+
+  local function count(name) calls[name] = calls[name] + 1 end
+
+  local function log(op, t)
+    t.op = op
+    t.color = { gc._color[1], gc._color[2], gc._color[3] }
+    ops[#ops + 1] = t
+  end
+
+  function gc:setColorRGB(r, g, b)
+    byte(r, "r", "setColorRGB"); byte(g, "g", "setColorRGB"); byte(b, "b", "setColorRGB")
+    self._color = { r, g, b }
+    count("setColorRGB")
+  end
+
+  function gc:setFont(family, style, size)
+    assert(FONT_FAMILIES[family], "setFont: bad family " .. tostring(family))
+    assert(FONT_STYLES[style], "setFont: bad style " .. tostring(style))
+    assert(FONT_SIZES[size], "setFont: unsupported size " .. tostring(size))
+    self._family, self._style, self._size = family, style, size
+    count("setFont")
+  end
+
+  function gc:setPen(size, style)
+    assert(PEN_SIZES[size], "setPen: bad size " .. tostring(size))
+    assert(PEN_STYLES[style], "setPen: bad style " .. tostring(style))
+    self._pen = style
+    count("setPen")
+  end
+
+  local function rectLike(call)
+    return function(self, x, y, w, h)
+      num(x, "x", call); num(y, "y", call)
+      num(w, "w", call); num(h, "h", call)
+      assert(w >= 0, call .. ": negative width " .. tostring(w))
+      assert(h >= 0, call .. ": negative height " .. tostring(h))
+      count(call)
+      log(call, { x = x, y = y, w = w, h = h, pen = self._pen })
+    end
+  end
+
+  gc.fillRect = rectLike("fillRect")
+  gc.drawRect = rectLike("drawRect")
+
+  function gc:fillArc(x, y, w, h, a1, a2)
+    num(x, "x", "fillArc"); num(y, "y", "fillArc")
+    num(w, "w", "fillArc"); num(h, "h", "fillArc")
+    num(a1, "startAngle", "fillArc"); num(a2, "arcAngle", "fillArc")
+    assert(w >= 0 and h >= 0, "fillArc: negative size")
+    count("fillArc")
+    log("fillArc", { x = x, y = y, w = w, h = h, a1 = a1, a2 = a2 })
+  end
+
+  function gc:drawLine(x1, y1, x2, y2)
+    num(x1, "x1", "drawLine"); num(y1, "y1", "drawLine")
+    num(x2, "x2", "drawLine"); num(y2, "y2", "drawLine")
+    count("drawLine")
+    log("drawLine", { x = x1, y = y1, x2 = x2, y2 = y2 })
+  end
+
+  function gc:drawString(text, x, y, anchor)
+    assert(type(text) == "string", "drawString: text must be a string, got " .. type(text))
+    num(x, "x", "drawString"); num(y, "y", "drawString")
+    assert(ANCHORS[anchor], "drawString: bad anchor " .. tostring(anchor))
+    count("drawString")
+    log("drawString", { x = x, y = y, text = text, anchor = anchor,
+                        size = self._size or 10, style = self._style or "r" })
+    return self:getStringWidth(text)
+  end
+
+  -- Measured widths when tools/fontmetrics.py has been run (so previews agree
+  -- with the layout), otherwise a rough but monotonic estimate.
+  function gc:getStringWidth(text)
+    assert(type(text) == "string", "getStringWidth: needs a string")
+    local size = self._size or 10
+    local table_ = stub.metrics and stub.metrics[self._style or "r"]
+    local widths = table_ and table_[size]
+    if not widths then
+      return math.floor(#text * (size * 0.55))
+    end
+    local total = 0
+    for i = 1, #text do
+      local code = string.byte(text, i)
+      total = total + (widths[code - 31] or widths[1] or 0)
+    end
+    return total
+  end
+
+  function gc:getStringHeight(text)
+    assert(type(text) == "string", "getStringHeight: needs a string")
+    return (self._size or 10) + 4
+  end
+
+  return gc, calls, ops
+end
+
+-- Installs the globals a .tns script expects, then loads and runs `path`.
+-- Returns the harness handle (window state, timer state, paint driver).
+function stub.load(path, w, h)
+  w, h = w or 318, h or 212
+
+  local harness = { invalidated = 0, timerPeriod = nil, timerRunning = false, w = w, h = h }
+
+  local window = {}
+  function window:width() return harness.w end
+  function window:height() return harness.h end
+  function window:invalidate() harness.invalidated = harness.invalidated + 1 end
+
+  _G.platform = { window = window, apilevel = nil }
+  _G.timer = {
+    start = function(period)
+      assert(type(period) == "number" and period > 0, "timer.start: bad period")
+      harness.timerPeriod, harness.timerRunning = period, true
+    end,
+    stop = function() harness.timerRunning = false end,
+  }
+  _G.on = {}
+  _G.var = { store = function() end, recall = function() return nil end }
+
+  local chunk = assert(loadfile(path))
+  chunk()
+
+  harness.on = _G.on
+  harness.platform = _G.platform
+
+  function harness:paint()
+    local gc, calls, ops = stub.newGC()
+    assert(self.on.paint, "script defines no on.paint")
+    self.on.paint(gc)
+    return calls, ops
+  end
+
+  function harness:resize(nw, nh)
+    self.w, self.h = nw, nh
+    if self.on.resize then self.on.resize(nw, nh) end
+  end
+
+  return harness
+end
+
+return stub

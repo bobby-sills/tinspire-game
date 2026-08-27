@@ -1,28 +1,15 @@
-# Snake for the TI-Nspire CX II
+# Snake and Flappy Bird for the TI-Nspire CX II
 
-A Snake game written in TI-Nspire Lua. It installs by drag-and-drop — no
-Ndless, no jailbreak, no root.
+Two games written in TI-Nspire Lua. They install by drag-and-drop — no Ndless,
+no jailbreak, no root.
 
-**Grab [`Snake.tns`](Snake.tns) and copy it onto your calculator.**
+**Grab [`Snake.tns`](Snake.tns) or [`Flappy.tns`](Flappy.tns) and copy it onto
+your calculator.**
+
+## Snake
 
 ![Title screen](docs/screenshots/title.png)
 ![In play](docs/screenshots/playing.png)
-
-## Installing it
-
-1. Connect the calculator over USB and open **TI-Nspire Student Software**
-   (or the Teacher Software — either works; the free trial is enough).
-2. In the Content Explorer, drag `Snake.tns` into the calculator's folder
-   list. It behaves like any other document.
-3. On the handheld, open **My Documents**, pick `Snake`, and press `enter`.
-
-There is nothing else to install. `Snake.tns` is a normal TI-Nspire document
-that happens to contain a Lua script, so the OS runs it in its built-in
-sandbox exactly like a TI-authored one.
-
-Requires OS 3.0.2 or newer, which every CX II ships with.
-
-## Playing
 
 | Key | Action |
 | --- | --- |
@@ -38,22 +25,68 @@ speeds up, to a cap at level 10. Following your own tail is legal — the cell
 your tail is leaving this move is safe to enter. Fill the whole board and you
 win.
 
-The high score lasts for the session. It resets when you close the document,
-because writing it back would mean saving the document on every death.
+## Flappy Bird
+
+![Title screen](docs/screenshots/flappy-title.png)
+![In play](docs/screenshots/flappy-playing.png)
+
+| Key | Action |
+| --- | --- |
+| `enter`, space, up arrow, `W`, `8`, `F`, or click | Flap |
+| `esc`, `P`, or down arrow | Pause |
+| `R` | Restart |
+
+One tap per gap. The bird only ever goes up when you tell it to, and the flap
+*sets* its speed rather than adding to it, so a tap out of a long dive lifts
+exactly as much as a tap from a hover — panicking works. Each pipe cleared is
+a point, and the gap tightens every 5 pipes down to a floor it never goes
+below.
+
+The pipe course is generated so that **every gap is reachable from the one
+before it**. Dealt at random, a low gap followed by a high one is simply
+impossible past some distance, and you lose to the generator instead of to
+your own thumbs. Instead the generator is fenced by the physics: it asks how
+far the bird can actually climb in the frames between two pipes, given the
+gravity and flap strength in force, and never places a gap outside that. See
+`src/flappy/game.lua` — and `tests/flappy/run.lua`, which checks the property
+three ways: the arithmetic of the band, the courses actually produced, and a
+deliberately crude autopilot that has to fly them.
+
+Both games' high scores last for the session. They reset when you close the
+document, because writing one back would mean saving the document on every
+death.
+
+## Installing
+
+1. Connect the calculator over USB. On a Mac the easiest route is
+   [TI-Nspire CX II Connect](https://nspireconnect.ti.com) — free, web-based,
+   nothing to install, but it **requires Chrome**; Safari has no WebUSB and
+   will fail in a way that looks like a hardware fault. TI-Nspire Student or
+   Teacher Software works too.
+2. Drag `Snake.tns` or `Flappy.tns` into the calculator's file list. They must
+   land in **My Documents** directly, not a subfolder.
+3. On the handheld, open **My Documents**, pick one, and press `enter`.
+
+There is nothing else to install. Each `.tns` is a normal TI-Nspire document
+that happens to contain a Lua script, so the OS runs it in its built-in
+sandbox exactly like a TI-authored one.
+
+Requires OS 3.0.2 or newer, which every CX II ships with.
 
 ## Building it yourself
 
-You only need this if you want to change the game; the committed `Snake.tns`
-is ready to use.
+You only need this if you want to change a game; the committed `.tns` files
+are ready to use.
 
 ```
-make              # bundle the sources and build Snake.tns
-make test         # run the test suites
-make screenshots  # render preview PNGs into build/snake/screenshots
+make GAME=snake                # build Snake.tns   (GAME defaults to snake)
+make GAME=flappy               # build Flappy.tns
+make GAME=flappy test          # that game's logic + runtime tests
+make GAME=flappy screenshots   # preview PNGs -> build/flappy/screenshots
+make all-games                 # build everything under src/
+make list                      # list games
 make clean
 ```
-
-Add `GAME=<name>` to target another game under `src/`; it defaults to `snake`.
 
 Requirements:
 
@@ -64,28 +97,32 @@ Requirements:
 - **Lua 5.1** for the tests (optional, but you want it).
 - **Pillow** (`pip install Pillow`) for `make screenshots` (optional).
 
-If you'd rather not build anything, paste `build/snake/snake.lua` into the Student
-Software's script editor (**Insert > Script Editor**) and save the document
-from there — same result, more clicking.
+If you'd rather not build anything, paste `build/<game>/<game>.lua` into the
+Student Software's script editor (**Insert > Script Editor**) and save the
+document from there — same result, more clicking.
 
 ## How it's laid out
 
 ```
-src/snake/game.lua   game rules -- pure Lua, no calculator APIs
-src/snake/main.lua   drawing, input and timing for the Nspire
-tests/snake/         logic tests, frame assertions, screenshot autoplay
-tests/nspire_stub.lua + tests/run_ui.lua   shared mock of the Nspire runtime
-tools/               shared: bundler, screenshot capture, PNG renderer
-build/snake/snake.lua  generated: the script that goes into the .tns
-Snake.tns            generated: the file you copy to the calculator
+src/<game>/game.lua       rules -- pure Lua, no calculator APIs
+src/<game>/main.lua       drawing, input and timing for the Nspire
+tests/<game>/run.lua      logic tests
+tests/<game>/ui.lua       game-specific frame assertions
+tests/<game>/autoplay.lua plays itself, for screenshots
+
+tests/nspire_stub.lua     shared: mock of the Nspire runtime
+tests/run_ui.lua          shared: game-agnostic runtime tests
+tools/                    shared: bundler, frame capture, PNG renderer
+build/<game>/<game>.lua   generated: the script that goes into the .tns
+<Game>.tns                generated: the file you copy to the calculator
 ```
 
-The `src/<game>/`, `tests/<game>/` layout is deliberate: the harness is shared
-between games, so a second game reuses all of it. See `CLAUDE.md`.
+The harness is shared between games; only the files under `src/<game>/` and
+`tests/<game>/` are per-game. `CLAUDE.md` has the details for adding a third.
 
-The split matters more than it looks. `src/snake/game.lua` touches no `platform`,
-`gc`, or `timer`, so the rules run under a desktop Lua and can be tested
-directly. Everything calculator-shaped lives in `src/snake/main.lua`.
+The logic/presentation split matters more than it looks. `game.lua` touches no
+`platform`, `gc`, or `timer`, so the rules run under a desktop Lua and can be
+tested directly. Everything calculator-shaped lives in `main.lua`.
 
 The handheld has no `require`, so `tools/bundle.py` inlines the logic module
 into a single file and puts `platform.apilevel` on line 1, where the OS looks
@@ -96,22 +133,26 @@ for it.
 Dragging a `.tns` over USB for every change gets old fast. Three options,
 roughly in order of how quickly they catch things:
 
-**`make test`** — two suites, no calculator involved. `tests/snake/run.lua` covers
-the rules: turn queueing, the tail-follow exception, food placement on a
-nearly-full board, the win condition, and a fuzz pass that checks structural
-invariants over thousands of random moves. `tests/run_ui.lua` loads the *actual
-bundled script* against `tests/nspire_stub.lua`, a mock of the calculator's
-runtime that is deliberately stricter than the real one: it rejects colours
-outside 0–255, unsupported font sizes, bad anchors, and negative rectangles.
-The Nspire ignores a malformed drawing call silently, which on hardware shows
-up as "the screen looks wrong" with nothing to debug — the mock turns that
-into a failing test instead.
+**`make GAME=<game> test`** — two suites, no calculator involved.
+`tests/<game>/run.lua` covers the rules: for Snake, turn queueing, the
+tail-follow exception, food placement on a nearly-full board and the win
+condition; for Flappy, the physics and the reachability of every generated
+gap. Both end with a fuzz pass checking structural invariants over thousands
+of steps.
 
-**`make screenshots`** — plays the game through the mock and rasterizes real
-frames to PNG at the handheld's true 318x212, so you can see a layout change
-without leaving the terminal. The simulated player reads the board back out of
-the paint calls rather than reaching into the game's internals, so no
-test-only hooks leak into the shipped script.
+`tests/run_ui.lua` loads the *actual bundled script* against
+`tests/nspire_stub.lua`, a mock of the calculator's runtime that is
+deliberately stricter than the real one: it rejects colours outside 0–255,
+unsupported font sizes, bad anchors, and negative rectangles. The Nspire
+ignores a malformed drawing call silently, which on hardware shows up as "the
+screen looks wrong" with nothing to debug — the mock turns that into a failing
+test instead. Each game adds its own frame assertions in `tests/<game>/ui.lua`.
+
+**`make GAME=<game> screenshots`** — plays the game through the mock and
+rasterizes real frames to PNG at the handheld's true 318x212, so you can see a
+layout change without leaving the terminal. The simulated player reads the
+world back out of the paint calls rather than reaching into the game's
+internals, so no test-only hooks leak into the shipped script.
 
 **An emulator** — [Firebird](https://github.com/nspire-emus/firebird) runs
 CX II images and opens `.tns` files directly, with a Lua console for live
@@ -125,11 +166,11 @@ calculator. Two things only real hardware can settle:
 
 - **Font metrics.** The mock measures text with DejaVu; the Nspire has its own
   font. The layout code always asks the device's own `getStringWidth` at
-  runtime, so boxes size themselves correctly either way, and the HUD drops the
-  "SNAKE" label rather than letting a long score collide with it. But the
-  preview images are representative, not exact.
-- **Timer pacing.** The game runs a fixed 0.05 s timer and counts ticks between
-  moves rather than restarting the timer at a new interval, because granularity
-  varies between Nspire OS versions. If your handheld's timer is coarser than
-  0.05 s the game just runs proportionally slower — it won't misbehave, but the
-  top speeds may not be reachable.
+  runtime, so boxes size themselves correctly either way, and the HUD drops its
+  title rather than letting a long score collide with it. But the preview
+  images are representative, not exact.
+- **Timer pacing.** Both games run a fixed 0.05 s timer and count ticks rather
+  than restarting the timer at new intervals, because granularity varies
+  between Nspire OS versions. If your handheld's timer is coarser than 0.05 s
+  the games run proportionally slower — they won't misbehave, but Snake's top
+  speeds may not be reachable, and Flappy will feel heavier than intended.

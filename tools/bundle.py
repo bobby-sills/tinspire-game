@@ -3,20 +3,34 @@
 
 The TI-Nspire has no `require`, so the whole game has to reach the calculator
 as one file. This inlines the logic module as an immediately-invoked function
-assigned to a local named `Game`, which is what every game's main.lua expects.
+assigned to a local, which is what the game's main.lua expects.
 
 `platform.apilevel` is emitted as line 1 because the Nspire reads it before
 running the script.
 
-  python3 tools/bundle.py src/snake build/snake.lua
+  python3 tools/bundle.py src/snake build/snake/snake.lua
 """
 
+import re
 import sys
 from pathlib import Path
 
 API_LEVEL = "2.0"
+DEFAULT_LOCAL = "Game"
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# main.lua opens with `local X = X or require("game")`, which is what makes the
+# file work both bundled (X is the local below) and under a desktop Lua. That
+# line is also the single source of truth for what to call the module here, so
+# a game is free to name it Game, Flappy, Board -- whatever reads best in its
+# own drawing code -- without the bundler needing a registry to keep in sync.
+BINDING_RE = re.compile(r"^local\s+(\w+)\s*=\s*\1\s+or\s+require\b", re.MULTILINE)
+
+
+def module_local(main_src: str) -> str:
+    m = BINDING_RE.search(main_src)
+    return m.group(1) if m else DEFAULT_LOCAL
 
 
 def build(src_dir: Path, out_path: Path) -> None:
@@ -29,6 +43,7 @@ def build(src_dir: Path, out_path: Path) -> None:
     main = main_path.read_text(encoding="utf-8").rstrip("\n")
 
     rel = src_dir.relative_to(ROOT) if src_dir.is_absolute() else src_dir
+    local = module_local(main)
 
     # Module bodies are inlined without re-indenting so that line numbers in
     # runtime errors stay close to the originals.
@@ -40,7 +55,7 @@ def build(src_dir: Path, out_path: Path) -> None:
         "--  Sources: %s/game.lua, %s/main.lua" % (rel, rel),
         "-- ==========================================================",
         "",
-        "local Game = (function()",
+        "local %s = (function()" % local,
         game,
         "end)()",
         "",
@@ -50,10 +65,11 @@ def build(src_dir: Path, out_path: Path) -> None:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(parts), encoding="utf-8")
+    return local
 
 
 if __name__ == "__main__":
     src = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "src" / "snake"
-    out = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "build" / "snake.lua"
-    build(src, out)
-    print("bundled %s -> %s" % (src, out))
+    out = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "build" / "snake" / "snake.lua"
+    local = build(src, out)
+    print("bundled %s -> %s (module local: %s)" % (src, out, local))

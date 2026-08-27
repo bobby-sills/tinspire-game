@@ -7,6 +7,10 @@ runs in its built-in sandbox.
 **The harness here is game-agnostic and already built. Reuse it — do not write
 your own mock runtime, bundler, or screenshot pipeline.**
 
+Games: `snake` (grid-stepped, turn-based feel) and `flappy` (continuous
+physics, fixed timestep). Between them they cover both shapes a new game is
+likely to take — read whichever is closer to what you're building.
+
 ## Commands
 
 ```
@@ -43,10 +47,15 @@ the rules run under a desktop Lua and be tested directly; everything
 calculator-shaped lives in `main.lua`. Keep it.
 
 The handheld has no `require`, so `tools/bundle.py` inlines `game.lua` into
-`main.lua` as `local Game = (function() ... end)()` and puts
-`platform.apilevel` on line 1, where the OS looks for it. `main.lua` starts
-with `local Game = Game or require("game")` so it works both bundled and
-under a desktop Lua.
+`main.lua` as an immediately-invoked function bound to a local, and puts
+`platform.apilevel` on line 1, where the OS looks for it.
+
+`main.lua` must open with `local X = X or require("game")`. That line is what
+makes the file work both bundled (X is the inlined local) and under a desktop
+Lua, and the bundler reads it to learn what to call the module — so a game can
+name it `Game`, `Flappy`, `Board`, whatever reads best in its drawing code,
+with no registry to keep in sync. The module file is always `game.lua`, so the
+require string is always `"game"` regardless of the local's name.
 
 ## Device constraints that shape design
 

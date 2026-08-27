@@ -98,7 +98,9 @@ test("handles pause, resume, restart and mode toggle", function()
   hs.on.enterKey(); hs:paint()    -- resume
   hs.on.charIn("r"); hs:paint()   -- restart
   hs.on.charIn("m"); hs:paint()   -- game-specific key, or junk: both must be safe
-  hs.on.deactivate(); hs:paint()  -- focus loss pauses
+  -- on.deactivate is optional in the Nspire API, so only exercise it if the
+  -- game defines one. Calling it unconditionally fails a game that doesn't.
+  if hs.on.deactivate then hs.on.deactivate(); hs:paint() end
   hs.on.enterKey(); hs:paint()
   ok(true, "no handler raised")
 end)

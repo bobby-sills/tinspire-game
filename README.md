@@ -47,11 +47,13 @@ You only need this if you want to change the game; the committed `Snake.tns`
 is ready to use.
 
 ```
-make          # bundle the sources and build Snake.tns
-make test     # run the test suites
-make screenshots  # render preview PNGs into build/screenshots
+make              # bundle the sources and build Snake.tns
+make test         # run the test suites
+make screenshots  # render preview PNGs into build/snake/screenshots
 make clean
 ```
+
+Add `GAME=<name>` to target another game under `src/`; it defaults to `snake`.
 
 Requirements:
 
@@ -62,25 +64,28 @@ Requirements:
 - **Lua 5.1** for the tests (optional, but you want it).
 - **Pillow** (`pip install Pillow`) for `make screenshots` (optional).
 
-If you'd rather not build anything, paste `build/snake.lua` into the Student
+If you'd rather not build anything, paste `build/snake/snake.lua` into the Student
 Software's script editor (**Insert > Script Editor**) and save the document
 from there — same result, more clicking.
 
 ## How it's laid out
 
 ```
-src/game.lua       game rules -- pure Lua, no calculator APIs
-src/main.lua       drawing, input and timing for the Nspire
-tools/bundle.py    inlines both into one script the handheld can run
-tools/screenshot.lua + tools/render.py    turn real frames into PNGs
-tests/             logic tests, plus a mock of the Nspire runtime
-build/snake.lua    generated: the script that goes into the .tns
-Snake.tns          generated: the file you copy to the calculator
+src/snake/game.lua   game rules -- pure Lua, no calculator APIs
+src/snake/main.lua   drawing, input and timing for the Nspire
+tests/snake/         logic tests, frame assertions, screenshot autoplay
+tests/nspire_stub.lua + tests/run_ui.lua   shared mock of the Nspire runtime
+tools/               shared: bundler, screenshot capture, PNG renderer
+build/snake/snake.lua  generated: the script that goes into the .tns
+Snake.tns            generated: the file you copy to the calculator
 ```
 
-The split matters more than it looks. `src/game.lua` touches no `platform`,
+The `src/<game>/`, `tests/<game>/` layout is deliberate: the harness is shared
+between games, so a second game reuses all of it. See `CLAUDE.md`.
+
+The split matters more than it looks. `src/snake/game.lua` touches no `platform`,
 `gc`, or `timer`, so the rules run under a desktop Lua and can be tested
-directly. Everything calculator-shaped lives in `src/main.lua`.
+directly. Everything calculator-shaped lives in `src/snake/main.lua`.
 
 The handheld has no `require`, so `tools/bundle.py` inlines the logic module
 into a single file and puts `platform.apilevel` on line 1, where the OS looks
@@ -91,7 +96,7 @@ for it.
 Dragging a `.tns` over USB for every change gets old fast. Three options,
 roughly in order of how quickly they catch things:
 
-**`make test`** — two suites, no calculator involved. `tests/run.lua` covers
+**`make test`** — two suites, no calculator involved. `tests/snake/run.lua` covers
 the rules: turn queueing, the tail-follow exception, food placement on a
 nearly-full board, the win condition, and a fuzz pass that checks structural
 invariants over thousands of random moves. `tests/run_ui.lua` loads the *actual

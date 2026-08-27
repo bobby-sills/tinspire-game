@@ -1,7 +1,7 @@
 -- Tests for the pure game logic. Run with:  make test
 -- (or: lua tests/run.lua   from the repo root)
 
-package.path = "src/?.lua;" .. package.path
+package.path = (os.getenv("GAME_SRC") or "src/snake") .. "/?.lua;" .. package.path
 local Game = require("game")
 
 -- ------------------------------------------------------------- framework --

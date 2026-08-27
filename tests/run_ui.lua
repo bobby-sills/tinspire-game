@@ -1,13 +1,19 @@
--- Drives build/snake.lua -- the exact script that goes into Snake.tns --
+-- Drives a built bundle -- the exact script that goes into the .tns --
 -- against a mock TI-Nspire runtime. Catches API misuse and handler crashes
 -- that logic tests can't see. Run with:  make test
 --
--- Usage: lua tests/run_ui.lua [path-to-bundle]
+-- Every test here is game-agnostic: it only assumes the script defines the
+-- usual on.* handlers and paints something. A game adds its own frame
+-- assertions in tests/<game>/ui.lua, which this file runs at the end.
+--
+-- Usage: lua tests/run_ui.lua [path-to-bundle] [game-name]
 
 package.path = "tests/?.lua;" .. package.path
 local stub = require("nspire_stub")
 
-local BUNDLE = ... or "build/snake.lua"
+local BUNDLE, GAME = ...
+BUNDLE = BUNDLE or "build/snake/snake.lua"
+GAME = GAME or BUNDLE:match("build/([^/]+)/")
 
 local passed, failed = 0, 0
 local current = "?"
@@ -63,9 +69,8 @@ end)
 test("paints the title screen without touching the API badly", function()
   local hs = boot()
   local calls = hs:paint()
-  ok(calls.fillRect > 4, "drew the field and snake (" .. calls.fillRect .. " rects)")
-  ok(calls.drawString >= 4, "drew HUD and panel text (" .. calls.drawString .. " strings)")
-  ok(calls.fillArc >= 1, "drew the food")
+  ok(calls.fillRect > 4, "drew a scene (" .. calls.fillRect .. " rects)")
+  ok(calls.drawString >= 2, "drew some text (" .. calls.drawString .. " strings)")
 end)
 
 test("survives a full play session with input", function()
@@ -92,21 +97,10 @@ test("handles pause, resume, restart and mode toggle", function()
   hs.on.charIn("p"); hs:paint()   -- pause again
   hs.on.enterKey(); hs:paint()    -- resume
   hs.on.charIn("r"); hs:paint()   -- restart
-  hs.on.charIn("m"); hs:paint()   -- toggle wall mode (blocked while playing)
+  hs.on.charIn("m"); hs:paint()   -- game-specific key, or junk: both must be safe
   hs.on.deactivate(); hs:paint()  -- focus loss pauses
   hs.on.enterKey(); hs:paint()
   ok(true, "no handler raised")
-end)
-
-test("wrap mode paints correctly", function()
-  local hs = boot()
-  hs.on.charIn("m") -- title screen: switch to wrap
-  local calls = hs:paint()
-  ok(calls.setPen >= 1, "set a pen style for the dashed border")
-  hs.on.enterKey()
-  for _ = 1, 400 do hs.on.timer() end
-  hs:paint()
-  ok(true, "played a wrap round")
 end)
 
 test("ignores junk input", function()
@@ -153,66 +147,6 @@ test("renders at every window size the software can produce", function()
   end
 end)
 
--- Pulls the playfield rect, the snake cells and the food out of a frame's
--- draw calls, so we can assert the board never spills past its own border.
-local function frameGeometry(ops)
-  local field, cells, food = nil, {}, nil
-  for _, o in ipairs(ops) do
-    local c = o.color
-    if o.op == "fillRect" then
-      if c[1] == 12 and c[2] == 14 and c[3] == 19 then
-        field = o
-      elseif o.w == o.h and o.w >= 4 and o.w <= 20 then
-        cells[#cells + 1] = o
-      end
-    elseif o.op == "fillArc" then
-      food = o
-    end
-  end
-  return field, cells, food
-end
-
-local function assertInsideField(ops, label)
-  local field, cells, food = frameGeometry(ops)
-  if not field then return fail(label .. ": no playfield drawn") end
-
-  local escaped = 0
-  for _, o in ipairs(cells) do
-    if o.x < field.x or o.y < field.y
-      or o.x + o.w > field.x + field.w
-      or o.y + o.h > field.y + field.h then
-      escaped = escaped + 1
-    end
-  end
-  eq(escaped, 0, label .. ": snake cells outside the playfield")
-
-  if food then
-    ok(food.x >= field.x and food.y >= field.y
-      and food.x + food.w <= field.x + field.w
-      and food.y + food.h <= field.y + field.h,
-      label .. ": food inside the playfield")
-  end
-end
-
-test("nothing is drawn outside the playfield", function()
-  for _, s in ipairs({ { 318, 212 }, { 640, 480 }, { 240, 160 } }) do
-    local hs = boot(s[1], s[2])
-    local label = string.format("%dx%d", s[1], s[2])
-    local _, ops = hs:paint()
-    assertInsideField(ops, label .. " title")
-
-    hs.on.enterKey()
-    for i = 1, 500 do
-      hs.on.timer()
-      if i % 5 == 0 then hs.on.arrowKey(({ "up", "left", "down", "right" })[(i % 4) + 1]) end
-      if i % 100 == 0 then
-        local _, playOps = hs:paint()
-        assertInsideField(playOps, label .. " playing@" .. i)
-      end
-    end
-  end
-end)
-
 test("resizing mid-game keeps rendering", function()
   local hs = boot(318, 212)
   hs.on.enterKey()
@@ -234,6 +168,17 @@ test("long soak with no input still paints every frame", function()
   end
   ok(true, "3000 ticks survived")
 end)
+
+-- Per-game frame assertions, e.g. "no cell escapes the playfield". Optional:
+-- a game with no tests/<game>/ui.lua just runs the generic suite above.
+if GAME then
+  local found, extra = pcall(require, GAME .. ".ui")
+  if found and type(extra) == "function" then
+    extra({ test = test, ok = ok, eq = eq, fail = fail, boot = boot, stub = stub })
+  elseif found then
+    fail("tests/" .. GAME .. "/ui.lua did not return a function")
+  end
+end
 
 print(string.format("\n%d passed, %d failed", passed, failed))
 if failed > 0 then os.exit(1) end

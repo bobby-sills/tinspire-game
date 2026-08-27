@@ -774,6 +774,8 @@ local TICK_NODES      = Board.TICK_NODES
 local HUD_H    = 22 -- height of the status bar, pixels
 local CURSOR_H = 16 -- strip above the board: the drop cursor, and the result banner
 local CELL_MIN = 6
+local PAD_X    = 8  -- breathing room around the result banner's text, pixels
+local PAD_Y    = 3
 local CELL_MAX = 40 -- past this the board looks silly on a large window
 
 local COLS, ROWS = Board.COLS, Board.ROWS
@@ -817,6 +819,7 @@ local starter    = 1      -- who opens the next round; alternates
 local menu = { row = 1, mode = 2, level = 2 } -- mode 1 = hot-seat, 2 = vs bot
 
 local MODE_NAMES  = { "2 Players (hot-seat)", "1 Player vs Computer" }
+local MODE_SHORT  = { "2 Players",            "vs Computer" }
 
 -- ---------------------------------------------------------------- helpers --
 
@@ -1307,32 +1310,81 @@ local function drawBoard(gc)
   end
 end
 
--- lines: array of { text, dim = bool, sel = bool }.
--- opts.widest: strings a line might later hold, so the panel is sized once for
---   the widest wording it can ever show and does not jitter as the selection
---   moves through the menu.
+-- lines: array of { text, dim = bool, sel = bool, alt = { shorter... },
+--   drop = n }. `alt` gives shorter wordings to fall back on when the window
+--   is too narrow for the first. `drop` marks a line that may be given up
+--   when the window is too short to hold them all, lowest rank first, so the
+--   line naming the key that starts the game outlives the ones explaining
+--   the menu.
+-- opts.widest: line tables a row might later hold, so the panel is sized once
+--   for the widest wording it can ever show and does not jitter as the
+--   selection moves through the menu.
+local TITLE_GAP = 8
+
 local function drawPanel(gc, title, lines, accent, opts)
   opts = opts or {}
+
   gc:setFont("sansserif", "b", 16)
+  local titleH = gc:getStringHeight(title)
   local titleW = gc:getStringWidth(title)
-
   gc:setFont("sansserif", "r", 10)
-  local maxW = titleW
-  for _, l in ipairs(lines) do
-    local lw = gc:getStringWidth(l[1])
-    if lw > maxW then maxW = lw end
+  local lineH = gc:getStringHeight("Ay")
+
+  -- Heights come from the font rather than from a guess at how tall a line
+  -- is: the handheld's font is not the one these tests measure with, and a
+  -- panel sized against the wrong number clips its own last line.
+  local shown = {}
+  for _, l in ipairs(lines) do shown[#shown + 1] = l end
+
+  local maxH = ui.h - HUD_H - 4
+  local pad = 12
+  local function panelH() return titleH + TITLE_GAP + #shown * lineH + pad * 2 end
+
+  -- Give up padding first, then the lines marked optional. A squeezed panel
+  -- beats a clipped one, and the rows you can actually select matter more
+  -- than the lines explaining how to select them.
+  while panelH() > maxH and pad > 2 do pad = pad - 1 end
+  while panelH() > maxH do
+    local pick, rank
+    for i = #shown, 1, -1 do
+      local d = shown[i].drop
+      if d and (rank == nil or d < rank) then pick, rank = i, d end
+    end
+    if not pick then break end
+    table.remove(shown, pick)
   end
-  for _, s in ipairs(opts.widest or {}) do
-    local lw = gc:getStringWidth(s)
-    if lw > maxW then maxW = lw end
+  -- Give the padding back once the lines are gone; it was only borrowed.
+  while pad < 12
+      and titleH + TITLE_GAP + #shown * lineH + (pad + 1) * 2 <= maxH do
+    pad = pad + 1
   end
 
-  local pad, lineH = 12, 14
-  -- Clamp to the window: the handheld is always wide enough, but the computer
-  -- software can be made smaller than the panel's natural size, and the Nspire
-  -- clips silently rather than complaining.
+  -- Then take the longest wording of each line that still fits across. The
+  -- handheld takes the full forms; only a computer-software window dragged
+  -- narrow ever reaches for the short ones.
+  local availW = ui.w - 4 - pad * 2
+  local function widestFitting(l)
+    local text = l[1]
+    for _, shorter in ipairs(l.alt or {}) do
+      if gc:getStringWidth(text) <= availW then break end
+      text = shorter
+    end
+    return text
+  end
+
+  local texts, maxW = {}, titleW
+  for i, l in ipairs(shown) do
+    texts[i] = widestFitting(l)
+    local w = gc:getStringWidth(texts[i])
+    if w > maxW then maxW = w end
+  end
+  for _, l in ipairs(opts.widest or {}) do
+    local w = gc:getStringWidth(widestFitting(l))
+    if w > maxW then maxW = w end
+  end
+
   local bw = math.min(maxW + pad * 2, ui.w - 4)
-  local bh = math.min(24 + #lines * lineH + pad * 2, ui.h - HUD_H - 4)
+  local bh = math.min(panelH(), maxH)
   local bx = math.max(2, math.floor((ui.w - bw) / 2))
   local by = math.max(HUD_H + 2, math.floor((ui.h - bh) / 2) + math.floor(HUD_H / 2))
 
@@ -1342,12 +1394,12 @@ local function drawPanel(gc, title, lines, accent, opts)
   gc:drawRect(bx, by, bw, bh)
 
   gc:setFont("sansserif", "b", 16)
-  gc:drawString(title, bx + math.floor((bw - titleW) / 2), by + pad - 2, "top")
+  gc:drawString(title, bx + math.floor((bw - titleW) / 2), by + pad, "top")
 
   gc:setFont("sansserif", "r", 10)
-  local y = by + pad + 22
+  local y = by + pad + titleH + TITLE_GAP
   local lit = (blink % 16) < 10
-  for _, l in ipairs(lines) do
+  for i, l in ipairs(shown) do
     if l.sel then
       col(gc, accent)
     elseif l.dim and not lit then
@@ -1357,7 +1409,7 @@ local function drawPanel(gc, title, lines, accent, opts)
     else
       col(gc, INK_DIM)
     end
-    gc:drawString(l[1], bx + math.floor((bw - gc:getStringWidth(l[1])) / 2), y, "top")
+    gc:drawString(texts[i], bx + math.floor((bw - gc:getStringWidth(texts[i])) / 2), y, "top")
     y = y + lineH
   end
 end
@@ -1367,10 +1419,8 @@ end
 -- right on top of the winning four, and that is the one thing worth looking
 -- at when a game ends.
 local function drawBanner(gc, text, accent)
-  local bh = math.min(CURSOR_H, ui.by - HUD_H - 2)
-  if bh < 10 then return end -- no room; the status bar still says who won
-
   gc:setFont("sansserif", "r", 10)
+
   -- Shorten rather than overflow: the handheld fits the long form, but the
   -- computer software can be dragged narrower than any of them.
   for _, candidate in ipairs({ text, "enter: again    M: menu", "enter / M" }) do
@@ -1378,8 +1428,16 @@ local function drawBanner(gc, text, accent)
     if gc:getStringWidth(text) <= ui.w - 20 then break end
   end
 
-  local tw = gc:getStringWidth(text)
-  local bw = math.min(tw + 16, ui.w - 4)
+  -- Size the bar around the line rather than around a guess at how tall a
+  -- line is. The first version centred against a hard-coded 11 when the font
+  -- reports 14, leaving the descenders of "play again" a single pixel off the
+  -- border: fine in the preview, and a clipped line on a handheld whose font
+  -- this code has no way to measure.
+  local tw, th = gc:getStringWidth(text), gc:getStringHeight(text)
+  local bh = math.min(th + PAD_Y * 2, ui.by - HUD_H - 2)
+  if bh < th + 2 then return end -- no room; the status bar still says who won
+
+  local bw = math.min(tw + PAD_X * 2, ui.w - 4)
   local bx = math.max(2, math.floor((ui.w - bw) / 2))
   local by = math.max(HUD_H + 1, ui.by - bh - 1)
 
@@ -1388,7 +1446,8 @@ local function drawBanner(gc, text, accent)
   col(gc, accent)
   gc:drawRect(bx, by, bw, bh)
   col(gc, INK)
-  gc:drawString(text, bx + math.floor((bw - tw) / 2), by + math.floor((bh - 11) / 2), "top")
+  gc:drawString(text, bx + math.floor((bw - tw) / 2),
+                      by + math.floor((bh - th) / 2), "top")
 end
 
 local function drawOverlay(gc)
@@ -1402,27 +1461,49 @@ local function drawOverlay(gc)
       return label .. ":  " .. text
     end
 
-    local modeLine  = row("Mode", MODE_NAMES[menu.mode], menu.row == 1)
-    local levelLine = row("Level", level().name, menu.row == 2)
+    -- Full wording, then a shorter mode name, then no label at all: at the
+    -- narrowest the arrows are what matter, and the status bar is already
+    -- spelling the mode out in full.
+    local function modeRow(i, selected)
+      return { row("Mode", MODE_NAMES[i], selected),
+               alt = { row("Mode", MODE_SHORT[i], selected),
+                       selected and ("< " .. MODE_SHORT[i] .. " >") or MODE_SHORT[i] } }
+    end
+
+    local modeLine = modeRow(menu.mode, menu.row == 1)
+    modeLine.sel = (menu.row == 1)
+
+    local function levelRow(name, selected)
+      return { row("Level", name, selected),
+               alt = { selected and ("< " .. name .. " >") or name } }
+    end
+
+    local levelLine = levelRow(level().name, menu.row == 2)
+    levelLine.sel = (menu.row == 2)
+    levelLine.dim = (menu.mode == 1)
 
     -- Every wording either row can take, so the panel is sized once for the
     -- widest and stays put while the player scrolls through them.
     local widest = {}
-    for _, m in ipairs(MODE_NAMES) do widest[#widest + 1] = row("Mode", m, true) end
-    for _, L in ipairs(Board.LEVELS) do widest[#widest + 1] = row("Level", L.name, true) end
+    for i = 1, #MODE_NAMES do widest[#widest + 1] = modeRow(i, true) end
+    for _, L in ipairs(Board.LEVELS) do
+      widest[#widest + 1] = levelRow(L.name, true)
+    end
 
     drawPanel(gc, "CONNECT 4", {
-      { modeLine,  sel = (menu.row == 1) },
-      { levelLine, sel = (menu.row == 2), dim = (menu.mode == 1) },
-      { "Up/Down pick a row, Left/Right change it" },
-      { "In play: arrows or 1-7, enter to drop" },
-      { "Press enter to play", dim = true },
+      modeLine,
+      levelLine,
+      { "Up/Down pick a row, Left/Right change it",
+        alt = { "Up/Down, then Left/Right" }, drop = 1 },
+      { "In play: arrows or 1-7, enter to drop",
+        alt = { "arrows or 1-7 to drop" }, drop = 1 },
+      { "Press enter to play", alt = { "enter to play" }, dim = true, drop = 2 },
     }, DISC[1], { widest = widest })
 
   elseif s == "paused" then
     drawPanel(gc, "PAUSED", {
       { NAME[game.turn] .. " to play" },
-      { "enter: resume     M: menu", dim = true },
+      { "enter: resume     M: menu", alt = { "enter / M" }, dim = true },
     }, { 240, 190, 70 })
 
   elseif s == "won" and resultVisible() then

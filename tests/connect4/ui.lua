@@ -344,6 +344,93 @@ return function(t)
     end
   end)
 
+  test("connect4: every line of text fits inside the box drawn around it", function()
+    -- Measured with the same getStringWidth/getStringHeight the game used, so
+    -- this is a claim about the layout arithmetic rather than about DejaVu.
+    --
+    -- The result banner used to centre its line against a hard-coded 11 when
+    -- the font reports 14, leaving the descenders of "play again" one pixel
+    -- off the border: fine in the preview, and a clipped line on a handheld
+    -- whose font this code cannot measure. Nothing caught it, so this does.
+    local gc = t.stub.newGC()
+
+    local function boxFor(op)
+      gc:setFont("sansserif", op.style, op.size)
+      return { x = op.x, y = op.y,
+               w = gc:getStringWidth(op.text), h = gc:getStringHeight(op.text) }
+    end
+
+    -- Every frame worth checking: the title panel, the pause panel, and the
+    -- banner a finished game puts up.
+    local function checkFrame(hs, label)
+      local ops = select(2, hs:paint())
+      local panel
+      for _, o in ipairs(ops) do
+        if o.op == "fillRect" and o.color[1] == 26 and o.color[2] == 30 and o.color[3] == 39 then
+          panel = o
+        end
+      end
+      if not panel then return 0 end
+
+      local checked = 0
+      for _, o in ipairs(ops) do
+        if o.op == "drawString" then
+          local b = boxFor(o)
+          -- The strings belonging to this box: anything below the status
+          -- bar whose horizontal midpoint falls inside it. Keying on the
+          -- vertical midpoint instead would let a line that spilled out of
+          -- the bottom escape the check entirely.
+          local midX = b.x + b.w / 2
+          if b.y >= 22 and midX > panel.x and midX < panel.x + panel.w then
+            if b.x < panel.x or b.x + b.w > panel.x + panel.w then
+              fail(string.format("%s: '%s' is %dpx wide at x %d..%d, outside its box's %d..%d",
+                label, o.text, b.w, b.x, b.x + b.w, panel.x, panel.x + panel.w))
+            elseif b.y < panel.y or b.y + b.h > panel.y + panel.h then
+              fail(string.format("%s: '%s' spans y %d..%d, outside its box's %d..%d",
+                label, o.text, b.y, b.y + b.h, panel.y, panel.y + panel.h))
+            else
+              checked = checked + 1
+            end
+          end
+        end
+      end
+      return checked
+    end
+
+    local total = 0
+    for _, s in ipairs(SIZES) do
+      local label = string.format("%dx%d", s[1], s[2])
+
+      -- Title screen, on every difficulty, since the wording changes width.
+      local hs = boot(s[1], s[2])
+      total = total + checkFrame(hs, label .. " title")
+      hs.on.arrowKey("down")
+      for _ = 1, 4 do
+        total = total + checkFrame(hs, label .. " menu")
+        hs.on.arrowKey("right")
+      end
+      hs.on.arrowKey("up")
+
+      -- Paused.
+      begin(hs, "hotseat")
+      Frame.play(hs, 4)
+      hs.on.escapeKey()
+      total = total + checkFrame(hs, label .. " paused")
+      hs.on.enterKey()
+
+      -- And the result banner. Red takes the bottom row while yellow answers
+      -- in column 7.
+      local won = boot(s[1], s[2])
+      begin(won, "hotseat")
+      for _, c in ipairs({ 1, 7, 2, 7, 3, 7, 4 }) do Frame.play(won, c) end
+      local n = checkFrame(won, label .. " game over")
+      ok(n >= 1, label .. ": the result banner drew a line to measure")
+      total = total + n
+    end
+
+    ok(total > 200, "measured a lot of lines (" .. total .. ")")
+  end)
+
   test("connect4: the title screen's panel does not resize as the menu moves", function()
     -- The panel is sized for the widest wording each row can ever take, so
     -- scrolling through the difficulties must not make it jump about.

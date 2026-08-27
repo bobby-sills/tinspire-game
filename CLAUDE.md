@@ -7,9 +7,11 @@ runs in its built-in sandbox.
 **The harness here is game-agnostic and already built. Reuse it — do not write
 your own mock runtime, bundler, or screenshot pipeline.**
 
-Games: `snake` (grid-stepped, turn-based feel) and `flappy` (continuous
-physics, fixed timestep). Between them they cover both shapes a new game is
-likely to take — read whichever is closer to what you're building.
+Games: `snake` (grid-stepped, turn-based feel), `flappy` (continuous physics,
+fixed timestep) and `2048` (strictly turn-based: no game loop, repaints on
+input, timer used only for the slide animation). Between them they cover the
+shapes a new game is likely to take — read whichever is closest to what you're
+building.
 
 ## Commands
 

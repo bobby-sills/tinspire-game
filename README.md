@@ -1,10 +1,10 @@
-# Snake and Flappy Bird for the TI-Nspire CX II
+# Snake, Flappy Bird and 2048 for the TI-Nspire CX II
 
-Two games written in TI-Nspire Lua. They install by drag-and-drop — no Ndless,
-no jailbreak, no root.
+Three games written in TI-Nspire Lua. They install by drag-and-drop — no
+Ndless, no jailbreak, no root.
 
-**Grab [`Snake.tns`](Snake.tns) or [`Flappy.tns`](Flappy.tns) and copy it onto
-your calculator.**
+**Grab [`Snake.tns`](Snake.tns), [`Flappy.tns`](Flappy.tns) or
+[`2048.tns`](2048.tns) and copy it onto your calculator.**
 
 ## Snake
 
@@ -52,8 +52,44 @@ gravity and flap strength in force, and never places a gap outside that. See
 three ways: the arithmetic of the band, the courses actually produced, and a
 deliberately crude autopilot that has to fly them.
 
-Both games' high scores last for the session. They reset when you close the
-document, because writing one back would mean saving the document on every
+## 2048
+
+![Title screen](docs/screenshots/2048-title.png)
+![In play](docs/screenshots/2048-playing.png)
+
+| Key | Action |
+| --- | --- |
+| Arrows, `2`/`4`/`6`/`8`, or `WASD` | Slide the board |
+| `enter` or space | Start, resume, keep going past 2048, play again |
+| `esc` or `P` | Pause |
+| `U` or `backspace` | Undo one move |
+| `R` | Restart |
+| Click | Slide toward the side of the board you clicked |
+
+Slide the whole board at once; equal tiles that collide merge into their sum,
+and the score goes up by whatever each merge produced. A tile that has just
+merged is spent for the rest of that move, which is why a row of `4 4 4 4`
+becomes `8 8` and never `16`. Which pair merges first depends on the direction
+you pushed: `4 4 4` gives `8 4` going left, but `4 8` going right.
+
+A move only counts if it changes something. Push against a wall nothing can
+move toward and nothing happens — no new tile, no score, and the turn is not
+spent. After every move that *did* change the board, a new `2` (or, one time in
+ten, a `4`) appears on a uniformly chosen empty cell.
+
+The round ends when **no** direction would change the board, which is not the
+same as the board being full — a full board with two equal neighbours still has
+a move in it. `U` or `backspace` undoes one move, the one that ended the round
+included, which is worth having when a mis-keyed arrow costs you the game.
+
+![Mid-slide](docs/screenshots/2048-sliding.png)
+
+Being turn-based, it runs no game loop: the screen repaints when you press a
+key and not otherwise. The timer has exactly one job — sliding tiles to their
+new cells — and only asks for repaints while a slide is actually on screen.
+
+All three games' high scores last for the session. They reset when you close
+the document, because writing one back would mean saving the document on every
 death.
 
 ## Installing
@@ -63,8 +99,8 @@ death.
    nothing to install, but it **requires Chrome**; Safari has no WebUSB and
    will fail in a way that looks like a hardware fault. TI-Nspire Student or
    Teacher Software works too.
-2. Drag `Snake.tns` or `Flappy.tns` into the calculator's file list. They must
-   land in **My Documents** directly, not a subfolder.
+2. Drag `Snake.tns`, `Flappy.tns` or `2048.tns` into the calculator's file
+   list. They must land in **My Documents** directly, not a subfolder.
 3. On the handheld, open **My Documents**, pick one, and press `enter`.
 
 There is nothing else to install. Each `.tns` is a normal TI-Nspire document
@@ -81,6 +117,7 @@ are ready to use.
 ```
 make GAME=snake                # build Snake.tns   (GAME defaults to snake)
 make GAME=flappy               # build Flappy.tns
+make GAME=2048                 # build 2048.tns
 make GAME=flappy test          # that game's logic + runtime tests
 make GAME=flappy screenshots   # preview PNGs -> build/flappy/screenshots
 make all-games                 # build everything under src/
@@ -118,7 +155,7 @@ build/<game>/<game>.lua   generated: the script that goes into the .tns
 ```
 
 The harness is shared between games; only the files under `src/<game>/` and
-`tests/<game>/` are per-game. `CLAUDE.md` has the details for adding a third.
+`tests/<game>/` are per-game. `CLAUDE.md` has the details for adding another.
 
 The logic/presentation split matters more than it looks. `game.lua` touches no
 `platform`, `gc`, or `timer`, so the rules run under a desktop Lua and can be
@@ -137,8 +174,10 @@ roughly in order of how quickly they catch things:
 `tests/<game>/run.lua` covers the rules: for Snake, turn queueing, the
 tail-follow exception, food placement on a nearly-full board and the win
 condition; for Flappy, the physics and the reachability of every generated
-gap. Both end with a fuzz pass checking structural invariants over thousands
-of steps.
+gap; for 2048, the merge rules where all the bugs live — merge-once-per-move,
+merge order by direction, what makes a move legal, and game over as "no
+direction changes the board" rather than "the board is full". All three end
+with a fuzz pass checking structural invariants over thousands of steps.
 
 `tests/run_ui.lua` loads the *actual bundled script* against
 `tests/nspire_stub.lua`, a mock of the calculator's runtime that is
@@ -169,8 +208,10 @@ calculator. Two things only real hardware can settle:
   runtime, so boxes size themselves correctly either way, and the HUD drops its
   title rather than letting a long score collide with it. But the preview
   images are representative, not exact.
-- **Timer pacing.** Both games run a fixed 0.05 s timer and count ticks rather
-  than restarting the timer at new intervals, because granularity varies
+- **Timer pacing.** Snake and Flappy run a fixed 0.05 s timer and count ticks
+  rather than restarting the timer at new intervals, because granularity varies
   between Nspire OS versions. If your handheld's timer is coarser than 0.05 s
-  the games run proportionally slower — they won't misbehave, but Snake's top
-  speeds may not be reachable, and Flappy will feel heavier than intended.
+  they run proportionally slower — they won't misbehave, but Snake's top speeds
+  may not be reachable, and Flappy will feel heavier than intended. 2048 is
+  unaffected: it is turn-based, and a coarse timer only makes its slide
+  animation longer.

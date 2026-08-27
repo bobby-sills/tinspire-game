@@ -1,10 +1,11 @@
-# Snake, Flappy Bird and 2048 for the TI-Nspire CX II
+# Snake, Flappy Bird, 2048 and Connect Four for the TI-Nspire CX II
 
-Three games written in TI-Nspire Lua. They install by drag-and-drop — no
+Four games written in TI-Nspire Lua. They install by drag-and-drop — no
 Ndless, no jailbreak, no root.
 
-**Grab [`Snake.tns`](Snake.tns), [`Flappy.tns`](Flappy.tns) or
-[`2048.tns`](2048.tns) and copy it onto your calculator.**
+**Grab [`Snake.tns`](Snake.tns), [`Flappy.tns`](Flappy.tns),
+[`2048.tns`](2048.tns) or [`Connect4.tns`](Connect4.tns) and copy it onto your
+calculator.**
 
 ## Snake
 
@@ -88,9 +89,74 @@ Being turn-based, it runs no game loop: the screen repaints when you press a
 key and not otherwise. The timer has exactly one job — sliding tiles to their
 new cells — and only asks for repaints while a slide is actually on screen.
 
-All three games' high scores last for the session. They reset when you close
-the document, because writing one back would mean saving the document on every
-death.
+## Connect Four
+
+![Title screen](docs/screenshots/connect4-title.png)
+![In play](docs/screenshots/connect4-playing.png)
+
+Two players on one calculator, or one player against a bot with four
+difficulties.
+
+| Key | Action |
+| --- | --- |
+| Left/right, or `A`/`D` | Move the cursor |
+| `enter`, down arrow, or `S` | Drop into the cursor's column |
+| `1`–`7` | Drop straight into that column |
+| `esc` or `P` | Pause |
+| `R` | Restart the round |
+| `M` | Back to the title screen |
+| Click | Drop into the column you clicked; confirm on menus |
+
+On the title screen, up/down picks a row and left/right changes it. Red always
+moves first, and who opens alternates between rounds. The match tally in the
+status bar survives a restart; it resets when you go back to the menu.
+
+"Two players" means two players **on one calculator**, taking turns. Nspire Lua
+has no networking of any kind — no sockets, no link cable, no wireless — so
+hot-seat is the only multiplayer there can be.
+
+### The bot
+
+The interesting part. There are no threads on this machine, so a search that
+ran to completion inside one `on.timer()` callback would freeze the screen and
+queue up keypresses for as long as it took, which to a player is
+indistinguishable from a crash.
+
+So the search never runs to completion in one go. It is an explicit state
+machine over its own stack of frames — `ai:think(n)` advances it by `n` nodes
+and returns either a column or "still thinking" — and `main.lua` feeds it one
+slice per tick, painting a thinking indicator meanwhile. Because the search is
+pure logic, the tests can drive the very same code straight through to the end
+and check that slicing it changes *when* it answers and never *what* it
+answers.
+
+It searches by iterative deepening: depth 1, then 2, then 3, keeping the best
+move found so far. That is what makes a budget usable — however little work the
+bot was allowed, the last completed depth has already left a move behind.
+Alpha-beta with centre-first ordering does the pruning; Connect Four's
+branching factor is seven, and a centre disc sits in more of the 69 winning
+lines than any other, so trying the middle first cuts the effective branching
+hard.
+
+Two things it deliberately does not do. It does not use bitboards, the usual
+trick for this game: Lua 5.1 has no bitwise operators and the Nspire has no
+`bit` library, so it is a plain array board. And it does not search the board
+you are playing on — the search is suspended between ticks with several discs
+still played, and painting *that* board showed phantom discs flickering in and
+out while the bot thought, so it works on a copy.
+
+Difficulty is search depth, plus deliberate blunders at Easy so a beginner can
+actually win. What each level really gets is a number of ticks; the depth that
+fits in them is whatever the machine can manage. The numbers behind that, and
+what was measured to pick them, are in the comment above `Board.LEVELS` in
+`src/connect4/game.lua`.
+
+![The bot thinking](docs/screenshots/connect4-thinking.png)
+![Game over](docs/screenshots/connect4-gameover.png)
+
+Snake, Flappy and 2048 keep high scores for the session, and Connect Four
+keeps a match tally. They reset when you close the document, because writing
+one back would mean saving the document on every death.
 
 ## Installing
 
@@ -99,8 +165,9 @@ death.
    nothing to install, but it **requires Chrome**; Safari has no WebUSB and
    will fail in a way that looks like a hardware fault. TI-Nspire Student or
    Teacher Software works too.
-2. Drag `Snake.tns`, `Flappy.tns` or `2048.tns` into the calculator's file
-   list. They must land in **My Documents** directly, not a subfolder.
+2. Drag `Snake.tns`, `Flappy.tns`, `2048.tns` or `Connect4.tns` into the
+   calculator's file list. They must land in **My Documents** directly, not a
+   subfolder.
 3. On the handheld, open **My Documents**, pick one, and press `enter`.
 
 There is nothing else to install. Each `.tns` is a normal TI-Nspire document
@@ -118,6 +185,7 @@ are ready to use.
 make GAME=snake                # build Snake.tns   (GAME defaults to snake)
 make GAME=flappy               # build Flappy.tns
 make GAME=2048                 # build 2048.tns
+make GAME=connect4             # build Connect4.tns
 make GAME=flappy test          # that game's logic + runtime tests
 make GAME=flappy screenshots   # preview PNGs -> build/flappy/screenshots
 make all-games                 # build everything under src/
@@ -176,8 +244,22 @@ tail-follow exception, food placement on a nearly-full board and the win
 condition; for Flappy, the physics and the reachability of every generated
 gap; for 2048, the merge rules where all the bugs live — merge-once-per-move,
 merge order by direction, what makes a move legal, and game over as "no
-direction changes the board" rather than "the board is full". All three end
+direction changes the board" rather than "the board is full". All of them end
 with a fuzz pass checking structural invariants over thousands of steps.
+
+Connect Four has unusually strong testable properties, and its suite leans on
+them. Win detection is checked in all four directions at every position on the
+board, and — because the game only ever looks at lines through the last disc
+played — against a full-board scan after every move of twelve hundred random
+games. The pruned search is checked against a slow, obviously-correct minimax
+written inside the test file: over many random positions, at the same depth,
+alpha-beta has to pick a move of equal value. The sliced search is checked
+against the same search run in one shot, node for node. And the bot plays
+fuzz matches against a random player, which it must essentially never lose.
+
+Between them those caught two bugs that no amount of reading would have: the
+search left its discs on the board when a budget ran out part-way, and the
+board being painted was the board being searched.
 
 `tests/run_ui.lua` loads the *actual bundled script* against
 `tests/nspire_stub.lua`, a mock of the calculator's runtime that is
@@ -208,10 +290,18 @@ calculator. Two things only real hardware can settle:
   runtime, so boxes size themselves correctly either way, and the HUD drops its
   title rather than letting a long score collide with it. But the preview
   images are representative, not exact.
+- **Bot speed.** How many search nodes a second the handheld manages is the
+  one number in Connect Four that is an estimate rather than a measurement —
+  the container the tests run on is an x86 desktop. The design does not depend
+  on getting it right: the bot's turn is capped in *ticks*, and iterative
+  deepening means a slower machine simply plays a shallower search rather than
+  hanging. If your calculator is slower than assumed, the bot is a little
+  weaker; if it is faster, the bot finishes early and the node budget takes
+  over.
 - **Timer pacing.** Snake and Flappy run a fixed 0.05 s timer and count ticks
   rather than restarting the timer at new intervals, because granularity varies
   between Nspire OS versions. If your handheld's timer is coarser than 0.05 s
   they run proportionally slower — they won't misbehave, but Snake's top speeds
   may not be reachable, and Flappy will feel heavier than intended. 2048 is
   unaffected: it is turn-based, and a coarse timer only makes its slide
-  animation longer.
+  animation longer, and Connect Four only spends longer on the bot's turn.

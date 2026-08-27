@@ -8,8 +8,9 @@ runs in its built-in sandbox.
 your own mock runtime, bundler, or screenshot pipeline.**
 
 Games: `snake` (grid-stepped, turn-based feel), `flappy` (continuous physics,
-fixed timestep) and `2048` (strictly turn-based: no game loop, repaints on
-input, timer used only for the slide animation). Between them they cover the
+fixed timestep), `2048` (strictly turn-based: no game loop, repaints on input,
+timer used only for the slide animation) and `connect4` (turn-based, plus a
+search that has to be sliced across timer ticks). Between them they cover the
 shapes a new game is likely to take — read whichever is closest to what you're
 building.
 
@@ -72,6 +73,22 @@ require string is always `"game"` regardless of the local's name.
   feels laggy. Turn-based and tap-based games fit best.
 - **No file I/O** in the sandbox. High scores last only for the session unless
   you save the document, which prompts the user on every death.
+- **There are no threads, and no way to yield to the OS.** Anything expensive
+  — a search, a solver, a generator — must be an explicit state machine with a
+  work budget that the timer advances one slice per tick. Run it to completion
+  inside one `on.timer()` and the screen freezes and keypresses queue up, which
+  a player reads as a crash. `src/connect4/game.lua` is the worked example:
+  `ai:think(maxNodes)` does bounded work and answers "still thinking" or a
+  move, and iterative deepening means there is always a usable answer to give
+  whenever the budget runs out. Keep the sliced thing in `game.lua` so tests
+  can drive it straight through and check that slicing changes only *when* it
+  answers, never *what*.
+- **Anything long-running gets a copy of the state, not the live one.** A
+  suspended search is suspended mid-mutation; if it shares the board with the
+  renderer, `on.paint` draws its half-explored guesses. Connect Four hit this
+  exactly.
+- **No bitwise operators.** This is Lua 5.1 with no `bit` library, so the usual
+  bitboard tricks are out. Plain arrays.
 - **Repaint is all-or-nothing.** `platform.window:invalidate()` redraws
   everything; only call it when something changed. A turn-based game can skip
   the timer entirely and repaint on input.
@@ -112,6 +129,12 @@ Nspire's font, and it can't tell you a game *feels* good. Tuning constants
 (gravity, speed, difficulty curves) needs real play — keep them in one clearly
 marked block so they're easy to change.
 
+Nor does it tell you how fast the handheld is. If you need a work budget,
+measure the cost on this container, say so in the comment, state the
+device factor you assumed, and then design so that being wrong about it
+degrades gracefully rather than breaking — Connect Four caps the bot's turn in
+*ticks* and lets iterative deepening decide the depth that fits.
+
 ## Environment setup
 
 None of this is preinstalled. Set it up before building:
@@ -129,7 +152,10 @@ None of this is preinstalled. Set it up before building:
 
 1. `src/<name>/game.lua` and `src/<name>/main.lua`, following Snake's shape.
 2. `tests/<name>/run.lua` for the rules — copy Snake's test framework header.
-3. Optionally `tests/<name>/ui.lua` and `tests/<name>/autoplay.lua`.
+3. Optionally `tests/<name>/ui.lua` and `tests/<name>/autoplay.lua`. A
+   `tests/<name>/frame.lua` that reads the board back out of the paint calls
+   is worth writing before either — see 2048 and connect4 — because it is what
+   lets both of them drive the game without a test-only hook in `src/`.
 4. `make GAME=<name> test && make GAME=<name>`.
 5. Commit the built `<Name>.tns` at the repo root — it's the deliverable people
    download and drag onto the calculator. Verify it's byte-identical to a fresh

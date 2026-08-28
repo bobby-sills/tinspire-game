@@ -1,11 +1,12 @@
-# Snake, Flappy Bird, 2048, Connect Four and Chess for the TI-Nspire CX II
+# Snake, Flappy Bird, 2048, Connect Four, Chess and Wordle for the TI-Nspire CX II
 
-Five games written in TI-Nspire Lua. They install by drag-and-drop — no
+Six games written in TI-Nspire Lua. They install by drag-and-drop — no
 Ndless, no jailbreak, no root.
 
 **Grab [`Snake.tns`](Snake.tns), [`Flappy.tns`](Flappy.tns),
-[`2048.tns`](2048.tns), [`Connect4.tns`](Connect4.tns) or
-[`Chess.tns`](Chess.tns) and copy it onto your calculator.**
+[`2048.tns`](2048.tns), [`Connect4.tns`](Connect4.tns),
+[`Chess.tns`](Chess.tns) or [`Wordle.tns`](Wordle.tns) and copy it onto your
+calculator.**
 
 ## Snake
 
@@ -312,6 +313,131 @@ one back would mean saving the document on every death. Chess keeps nothing
 between games, but `U` will walk a game back move by move for as long as you
 have the patience.
 
+## Wordle
+
+![Title screen](docs/screenshots/wordle-title.png)
+![In play](docs/screenshots/wordle-playing.png)
+
+| Key | Action |
+| --- | --- |
+| Letter keys | Type into the current row |
+| `enter`, or space | Guess the word; start or restart between games |
+| Left arrow, or `del` | Delete a letter |
+| `esc` | Clear the whole row |
+| `H` | Toggle hard mode (title screen only) |
+| Click | Tap the on-screen keyboard, including `ENT` and `DEL` |
+
+Six goes at a five-letter word. Green means right letter, right place; yellow
+means right letter, wrong place; grey means the letter is not there.
+
+This is the one game here where the calculator's keyboard is used as a
+keyboard, which suits the hardware better than anything needing a *held* key —
+there is no key-down polling and no key-up event on the Nspire, so a held key
+routes through OS auto-repeat and feels laggy. Typing is discrete by nature, so
+it feels the same as it does anywhere else.
+
+Deleting is bound twice on purpose. `on.backspaceKey` is not in every Nspire OS
+build, so the left arrow deletes as well; whichever handler the runtime
+actually calls, the player can take a letter back.
+
+### The colouring rule, which is the whole game
+
+The naive check — "is this letter somewhere in the answer?" — is wrong, and
+it is wrong in the case that comes up constantly. Guess **SPEED** against
+answer **ABIDE** and it paints both E's, telling you there are two E's when
+there is one.
+
+The rule is a two-pass multiset algorithm:
+
+1. Mark every position where the letters match green, and **remove those
+   letters from a pool** initialised to the answer's letters.
+2. Walk left to right over what is left. If the guessed letter is still in the
+   pool, mark it yellow and take one from the pool; otherwise mark it grey.
+
+Greens claim their letters before any yellow is assigned — *including greens
+further right than the yellow candidate*. Guess **LOLLY** against answer
+**ALLOW**: the third L matches, so only one of the answer's two L's is left,
+the first L takes it, and the fourth L gets nothing. `YYGBB`.
+
+### Proving it
+
+Cases are not enough here, so the rule is pinned by properties over thousands
+of pairs drawn from the real word list — the same role perft plays for the
+chess move generator. Five of them, which together leave the answer no freedom
+at all:
+
+- for every letter, greens + yellows = `min(count in guess, count in answer)`
+- a position is green if and only if the letters match
+- among positions competing for one scarce letter, the leftmost gets the yellow
+- `score(w, w)` is all green, for every word in the list
+- the multiset of non-grey letters is the same whichever word you call the answer
+
+Hand-written cases then sit underneath as regression anchors, each derived in
+the test file's comments rather than recalled. That is not pedantry: the first
+draft of the hard-mode duplicate test used **WEDGE**, which fails for the wrong
+reason — its `D` breaks a green *position* rule before the duplicate rule is
+ever reached. The comment now says so.
+
+`tests/wordle/run.lua` also runs a solver over all 2,315 answers and prints the
+distribution. It asserts nothing about quality — it is there because playing
+two thousand complete games is a far harder workout for the scoring function
+than any case anyone would write by hand.
+
+### Fitting it on the screen
+
+318x212 is tighter than it sounds. A 5x6 grid, a three-row keyboard and a
+status line stacked vertically force the tiles down to about 18 pixels. But the
+screen is landscape and Wordle's layout is portrait, so they go **side by
+side** instead: the grid takes 152x183 at 28-pixel tiles, and the 146 pixels
+left over hold ten 13-pixel keys per row with room to spare.
+
+![A win](docs/screenshots/wordle-win.png)
+![A loss](docs/screenshots/wordle-loss.png)
+
+The keyboard is not decoration — it is where the per-letter state lives, and
+that state is most of the game's feedback. A letter only ever moves *up* the
+scale, grey to yellow to green, never back, which falls out of storing the mark
+as an ordered number and keeping the maximum. It also updates only once a row
+has finished turning over, so a letter never goes green before the tile that
+earned it.
+
+Under the count of guesses left is the number of answers still consistent with
+everything shown. Filtering 2,315 words is not free on a 396MHz ARM, and there
+are no threads and no way to yield, so it is a state machine the timer advances
+one slice per tick — the same shape as Connect Four's search. The pass builds a
+new list and swaps it in only when it finishes, so a repaint can never catch it
+half-done. A test drives it at budgets from 1 to 100,000 and checks the answer
+is identical every time: slicing changes *when* it answers, never *what*.
+
+Hard mode makes revealed hints compulsory, and the duplicate semantics are the
+fiddly part. A green pins its square. A yellow only promises the letter appears
+*somewhere* — but a row showing the same letter non-grey twice has promised it
+appears twice, so the obligation is a count, taken as the maximum across rows
+rather than the sum: two rows each showing one E prove there is one E, not two.
+
+### 13,732 words inside the document
+
+There is no file I/O in the sandbox, so the dictionary travels inside the
+`.tns`. Both lists are one long Lua string, one word per line, binary-searched
+with `string.sub` — about 14 steps over 11,417 guesses. Three shapes were
+measured before picking that one:
+
+| | source | `.tns` | parse |
+| --- | --- | --- | --- |
+| one word per line, 6 bytes each | 68,523 | 29,638 | 0.3 ms |
+| packed 5 bytes per word | 57,835 | 28,012 | 0.2 ms |
+| base-26 integers in a table | 90,198 | 33,233 | 3.2 ms |
+
+The integer table loses on every axis at once — half again the source, a fifth
+more `.tns`, and ten times the parse cost, which on the handheld is a visible
+pause at launch. That 26^5 fits exactly in a double is true and irrelevant.
+Packing to five bytes saves 1.6 KB; the readable form was worth more than that,
+because a dictionary you can `grep` and review in a diff is one where a bad
+entry gets noticed.
+
+Bitwise tricks are out anyway: this is Lua 5.1 with no `bit` library on the
+Nspire, so no letter-presence masks. Plain arithmetic and a 26-element array.
+
 ## Installing
 
 1. Connect the calculator over USB. On a Mac the easiest route is
@@ -319,8 +445,8 @@ have the patience.
    nothing to install, but it **requires Chrome**; Safari has no WebUSB and
    will fail in a way that looks like a hardware fault. TI-Nspire Student or
    Teacher Software works too.
-2. Drag `Snake.tns`, `Flappy.tns`, `2048.tns`, `Connect4.tns` or `Chess.tns`
-   into the calculator's file list. They must land in **My Documents** directly, not a
+2. Drag `Snake.tns`, `Flappy.tns`, `2048.tns`, `Connect4.tns`, `Chess.tns` or
+   `Wordle.tns` into the calculator's file list. They must land in **My Documents** directly, not a
    subfolder.
 3. On the handheld, open **My Documents**, pick one, and press `enter`.
 
@@ -341,6 +467,7 @@ make GAME=flappy               # build Flappy.tns
 make GAME=2048                 # build 2048.tns
 make GAME=connect4             # build Connect4.tns
 make GAME=chess                # build Chess.tns
+make GAME=wordle               # build Wordle.tns
 make GAME=flappy test          # that game's logic + runtime tests
 make GAME=flappy screenshots   # preview PNGs -> build/flappy/screenshots
 make all-games                 # build everything under src/
@@ -376,6 +503,7 @@ tests/nspire_stub.lua     shared: mock of the Nspire runtime
 tests/run_ui.lua          shared: game-agnostic runtime tests
 tools/                    shared: bundler, frame capture, PNG renderer
 tools/sprites.py          chess only: piece art -> Lua run-length spans
+tools/wordlist.py         wordle only: word lists -> a Lua string to search
 build/<game>/<game>.lua   generated: the script that goes into the .tns
 <Game>.tns                generated: the file you copy to the calculator
 ```
@@ -457,6 +585,16 @@ The chess pieces are [Pixel Chess](https://brosen.itch.io/pixel-chess) by
 **brosen**, used under the pack's own terms. The source PNGs are kept in
 `assets/chess/` exactly as published; `tools/sprites.py` is what turns them
 into something a calculator can draw.
+
+Wordle's accepted-guess list is **SCOWL** (Spell Checker Oriented Word Lists),
+Copyright 2000-2011 Kevin Atkinson, taken from Debian's `wamerican-huge`
+package and filtered to five letters. SCOWL's terms are permissive and ask that
+the notice travel with the words, so it does: `assets/wordle/SCOWL-COPYRIGHT.txt`.
+
+The answer list came from the original Wordle's JavaScript bundle and carries
+**no stated licence** — see `assets/wordle/README.md`, which says so plainly
+rather than pretending otherwise. Swapping in a different list is one file and
+one command.
 
 Everything else here is original.
 

@@ -9,10 +9,11 @@ your own mock runtime, bundler, or screenshot pipeline.**
 
 Games: `snake` (grid-stepped, turn-based feel), `flappy` (continuous physics,
 fixed timestep), `2048` (strictly turn-based: no game loop, repaints on input,
-timer used only for the slide animation) and `connect4` (turn-based, plus a
-search that has to be sliced across timer ticks). Between them they cover the
-shapes a new game is likely to take — read whichever is closest to what you're
-building.
+timer used only for the slide animation), `connect4` (turn-based, plus a
+search that has to be sliced across timer ticks) and `chess` (the same, with
+rules complicated enough that verifying them is most of the work). Between
+them they cover the shapes a new game is likely to take — read whichever is
+closest to what you're building.
 
 ## Commands
 
@@ -88,10 +89,22 @@ require string is always `"game"` regardless of the local's name.
   renderer, `on.paint` draws its half-explored guesses. Connect Four hit this
   exactly.
 - **No bitwise operators.** This is Lua 5.1 with no `bit` library, so the usual
-  bitboard tricks are out. Plain arrays.
+  bitboard tricks are out. Plain arrays. `src/chess/game.lua` is the worked
+  example of what that costs: no bitboards, and the textbook 0x88 board is out
+  too since it is an AND — a padded mailbox instead, where off-board detection
+  is one array lookup. Zobrist hashing needs XOR, so repetition detection
+  builds a string key and counts it in a table.
 - **Repaint is all-or-nothing.** `platform.window:invalidate()` redraws
   everything; only call it when something changed. A turn-based game can skip
   the timer entirely and repaint on input.
+- **Sprite art does not have to mean `image.new`.** `gc:drawImage` exists, but
+  the binary layout `image.new` wants is documented only by TI (blocked here),
+  and a wrong guess paints nothing with no error. 1-bit art can go in as
+  horizontal runs drawn with `fillRect` instead, which is API the mock and the
+  PNG renderer already model -- chess does this for a whole 32-piece board in
+  ~940 rects and four `setColorRGB` calls, and needed no harness changes at
+  all. `tools/sprites.py` is the worked example; group runs by colour, because
+  the colour change is the expensive part, not the rect.
 - **Font metrics are unknown until runtime.** Always size boxes with
   `gc:getStringWidth`, never a character-count estimate. Have layouts degrade
   when text is wider than expected rather than assuming it fits.
@@ -108,7 +121,13 @@ require string is always `"game"` regardless of the local's name.
 Three layers, cheapest first. All of it runs in this container.
 
 1. `tests/<game>/run.lua` — the rules, under desktop Lua. Fuzz over many random
-   moves and assert structural invariants, not just happy paths.
+   moves and assert structural invariants, not just happy paths. Where the
+   rules are standard enough to have published reference numbers, use them:
+   chess's move generator is checked by perft against counts the outside world
+   already knows, which proves more in one test than every hand-written rule
+   case in that file put together. Prove a fixture is what you think it is
+   rather than asserting from memory — several "mate in one" positions written
+   from memory here were not mates in one.
 2. `tests/run_ui.lua` — loads **the actual built bundle** against
    `tests/nspire_stub.lua`, a mock deliberately stricter than the real runtime:
    it rejects out-of-range colours, unsupported font sizes, bad anchors and

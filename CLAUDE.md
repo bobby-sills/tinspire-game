@@ -10,10 +10,11 @@ your own mock runtime, bundler, or screenshot pipeline.**
 Games: `snake` (grid-stepped, turn-based feel), `flappy` (continuous physics,
 fixed timestep), `2048` (strictly turn-based: no game loop, repaints on input,
 timer used only for the slide animation), `connect4` (turn-based, plus a
-search that has to be sliced across timer ticks) and `chess` (the same, with
-rules complicated enough that verifying them is most of the work). Between
-them they cover the shapes a new game is likely to take — read whichever is
-closest to what you're building.
+search that has to be sliced across timer ticks), `chess` (the same, with
+rules complicated enough that verifying them is most of the work) and `wordle`
+(text input rather than steering, bulk data baked into the bundle, and a rule
+whose correctness is the whole job). Between them they cover the shapes a new
+game is likely to take — read whichever is closest to what you're building.
 
 ## Commands
 
@@ -42,6 +43,8 @@ tools/bundle.py         inlines game+main into one file -- shared
 tools/screenshot.lua    frame capture driver            -- shared
 tools/render.py         draw-ops -> PNG                 -- shared
 tools/fontmetrics.py    font metrics for the mock       -- shared
+tools/wordlist.py       wordle only: lists -> Lua string
+assets/<game>/          source data, where a game has any
 ```
 
 ## Architecture, and why
@@ -73,7 +76,12 @@ require string is always `"game"` regardless of the local's name.
   event, so anything needing a *held* key routes through OS auto-repeat and
   feels laggy. Turn-based and tap-based games fit best.
 - **No file I/O** in the sandbox. High scores last only for the session unless
-  you save the document, which prompts the user on every death.
+  you save the document, which prompts the user on every death. Anything the
+  game needs to *know* has to be compiled into the script: Wordle carries a
+  13,732-word dictionary as two long Lua strings, one word per line, binary
+  searched with `string.sub`. Measure the representation rather than picking
+  one -- a table of packed integers was 19% bigger in the `.tns` and 10x slower
+  to parse than the plain string it was supposed to beat.
 - **There are no threads, and no way to yield to the OS.** Anything expensive
   — a search, a solver, a generator — must be an explicit state machine with a
   work budget that the timer advances one slice per tick. Run it to completion
@@ -109,7 +117,15 @@ require string is always `"game"` regardless of the local's name.
   `gc:getStringWidth`, never a character-count estimate. Have layouts degrade
   when text is wider than expected rather than assuming it fits.
 - **Colours** are integers 0–255. Font sizes are limited (7, 9, 10, 11, 12, 16,
-  24); the mock rejects others. Anchors are `top`/`middle`/`baseline`.
+  24); the mock rejects others. Anchors are `top`/`middle`/`baseline`. The
+  preview renderer anchors text at the top left, so use `"top"` and centre by
+  hand from `getStringHeight` — `"middle"` looks right on the device and wrong
+  in `make screenshots`.
+- **Size a glyph from the widest glyph, not the one in hand.** Fitting each
+  letter to its own box independently gives `I` a bigger font than `W` in the
+  key beside it, and a row of keys comes out visibly ragged.
+  `src/wordle/main.lua` measures all 26 letters once per box size and caches
+  the result.
 - Changing colour is a call, so quantise gradients into bands instead of
   setting a new colour per element.
 - **Seed the RNG from more than `os.time()`** — it can return the same value on
@@ -125,9 +141,13 @@ Three layers, cheapest first. All of it runs in this container.
    rules are standard enough to have published reference numbers, use them:
    chess's move generator is checked by perft against counts the outside world
    already knows, which proves more in one test than every hand-written rule
-   case in that file put together. Prove a fixture is what you think it is
-   rather than asserting from memory — several "mate in one" positions written
-   from memory here were not mates in one.
+   case in that file put together. Where a rule has an exact characterisation
+   instead, assert *that*, over a fuzz of thousands of real inputs: Wordle's
+   colouring is pinned by five properties that between them leave the answer
+   no freedom, which is worth more than any number of examples. Prove a
+   fixture is what you think it is rather than asserting from memory — several
+   "mate in one" positions written from memory here were not mates in one, and
+   a hard-mode fixture written the same way passed for the wrong reason.
 2. `tests/run_ui.lua` — loads **the actual built bundle** against
    `tests/nspire_stub.lua`, a mock deliberately stricter than the real runtime:
    it rejects out-of-range colours, unsupported font sizes, bad anchors and
@@ -175,6 +195,9 @@ None of this is preinstalled. Set it up before building:
    `tests/<name>/frame.lua` that reads the board back out of the paint calls
    is worth writing before either — see 2048 and connect4 — because it is what
    lets both of them drive the game without a test-only hook in `src/`.
+   If two things on screen share a colour (Wordle's tiles and its keyboard
+   both use the mark colours), give one of them a backing rect in a colour
+   nothing else uses; the frame reader can then separate them by geometry.
 4. `make GAME=<name> test && make GAME=<name>`.
 5. Commit the built `<Name>.tns` at the repo root — it's the deliverable people
    download and drag onto the calculator. Verify it's byte-identical to a fresh

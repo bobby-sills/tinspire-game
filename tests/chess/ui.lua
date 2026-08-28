@@ -84,26 +84,41 @@ return function(t)
         eq(Frame.pieceCount(f), 32, label .. ": thirty-two pieces on the board")
         eq(#f.cells, 32, label .. ": and every one of them landed on a square")
 
-        -- Every letter sits inside the square it belongs to. This is what
-        -- catches a glyph centred out of its own cell, which is what happens
-        -- when the smallest font the OS has is still taller than a square.
-        for _, cellPiece in ipairs(f.cells) do
-          local x0 = f.bx + cellPiece.c * f.cell
-          local y0 = f.by + cellPiece.r * f.cell
-          ok(cellPiece.op.x >= x0 and cellPiece.op.x < x0 + f.cell
-              and cellPiece.op.y >= y0 and cellPiece.op.y < y0 + f.cell,
-            label .. ": the letter is inside its own square")
-        end
-
-        -- And every piece has its disc under it, drawn wholly on the board.
-        local discs = 0
-        for _, o in ipairs(ops) do
-          if o.op == "fillArc" and o.x >= f.bx and o.y >= f.by
-              and o.x + o.w <= f.bx + f.board and o.y + o.h <= f.by + f.board then
-            discs = discs + 1
+        -- Every piece is drawn wholly inside the square it belongs to,
+        -- whichever way it is being drawn. For a letter this is what catches
+        -- a glyph centred out of its own cell, which happens when the
+        -- smallest font the OS has is still taller than a square; for a
+        -- sprite it is what catches an inset computed the wrong way round.
+        for _, piece in ipairs(f.cells) do
+          local x0 = f.bx + piece.c * f.cell
+          local y0 = f.by + piece.r * f.cell
+          if piece.sprite then
+            ok(piece.x0 >= x0 and piece.y0 >= y0
+                and piece.x1 <= x0 + f.cell and piece.y1 <= y0 + f.cell,
+              label .. ": the sprite is inside its own square")
+          else
+            ok(piece.op.x >= x0 and piece.op.x < x0 + f.cell
+                and piece.op.y >= y0 and piece.op.y < y0 + f.cell,
+              label .. ": the letter is inside its own square")
           end
         end
-        eq(discs, 32, label .. ": thirty-two piece discs, all inside the board")
+        eq(f.unknownSprites, nil, label .. ": every sprite drawn is a known piece")
+
+        -- Sprites are drawn at a fixed 16x16 with no scaling available, so
+        -- the game must fall back to letters rather than crop them.
+        if f.cell >= 16 then
+          ok(f.spriteMode, label .. ": squares this size get the sprites")
+        else
+          ok(not f.spriteMode, label .. ": squares this small fall back to letters")
+          local discs = 0
+          for _, o in ipairs(ops) do
+            if o.op == "fillArc" and o.x >= f.bx and o.y >= f.by
+                and o.x + o.w <= f.bx + f.board and o.y + o.h <= f.by + f.board then
+              discs = discs + 1
+            end
+          end
+          eq(discs, 32, label .. ": thirty-two discs behind the letters")
+        end
       end
 
       -- And nothing at all is painted at a negative coordinate, which is the

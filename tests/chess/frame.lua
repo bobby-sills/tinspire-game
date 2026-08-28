@@ -16,8 +16,8 @@ local PANEL    = key({  26,  30,  39 })
 local HUD      = key({  30,  34,  44 })
 local W_INK    = key({  30,  30,  38 })
 local B_INK    = key({ 236, 236, 244 })
-local W_DISC   = key({ 248, 246, 240 })
-local B_DISC   = key({  44,  44,  54 })
+local W_FILL   = key({ 248, 246, 240 })
+local B_FILL   = key({  44,  44,  54 })
 local CURSOR   = key({ 250, 250, 250 })
 local DEST     = key({  70, 158,  84 })
 local CHECK_SQ = key({ 208,  76,  66 })
@@ -27,6 +27,25 @@ local LAST     = { [key({ 214, 208, 128 })] = true, [key({ 146, 138,  74 })] = t
 
 M.LETTERS = { P = 1, N = 2, B = 3, R = 4, Q = 5, K = 6 }
 M.SIDE_INK = { [W_INK] = 1, [B_INK] = 2 }
+
+-- The board draws pieces one of two ways: 16x16 sprites where a square is big
+-- enough for them, and letters on discs where it is not. This reader handles
+-- both, because tests/run_ui.lua drives window sizes either side of the line.
+M.SIDE_FILL = { [W_FILL] = 1, [B_FILL] = 2 }
+
+-- A sprite is identified by how many horizontal runs it is drawn in and how
+-- many pixels those runs cover -- a pair that is unique across the six pieces.
+-- This is a contract with the art in assets/chess and with the table
+-- tools/sprites.py generates from it; tests/chess/run.lua does not depend on
+-- it, so a change to the sprites breaks only this line and not the rules.
+M.SPRITE_SHAPES = {
+  ["7,28"]  = 1, -- pawn
+  ["10,44"] = 2, -- knight
+  ["11,34"] = 3, -- bishop
+  ["10,36"] = 4, -- rook
+  ["13,42"] = 5, -- queen
+  ["12,44"] = 6, -- king
+}
 
 -- Returns a table describing one painted frame:
 --   rim         the board's moulded-edge fillRect, or nil if no board was drawn
@@ -107,12 +126,55 @@ function M.read(ops)
     return p and o.x >= p.x and o.x < p.x + p.w and o.y >= p.y and o.y < p.y + p.h
   end
 
+  local function place(c, r, side, ptype, extra)
+    local cell = { c = c, r = r, side = side, type = ptype }
+    if extra then for k, v in pairs(extra) do cell[k] = v end end
+    f.cells[#f.cells + 1] = cell
+    f.grid[r * 8 + c + 1] = side * 8 + ptype
+    return cell
+  end
+
+  -- Sprites: gather every fill-coloured run into the square it lands in, then
+  -- name the piece from the shape those runs add up to.
+  local sprites = {}
+  for _, R in ipairs(rects) do
+    local side = M.SIDE_FILL[R.k]
+    if side and R.op.op == "fillRect" and not inPanel(R.op) then
+      local c, r = cellAt(R.op.x, R.op.y)
+      if c then
+        local idx = r * 8 + c
+        local acc = sprites[idx]
+        if not acc then
+          acc = { c = c, r = r, side = side, runs = 0, px = 0,
+                  x0 = R.op.x, y0 = R.op.y, x1 = R.op.x + R.op.w, y1 = R.op.y + 1 }
+          sprites[idx] = acc
+        end
+        acc.runs = acc.runs + 1
+        acc.px = acc.px + R.op.w
+        if R.op.x < acc.x0 then acc.x0 = R.op.x end
+        if R.op.y < acc.y0 then acc.y0 = R.op.y end
+        if R.op.x + R.op.w > acc.x1 then acc.x1 = R.op.x + R.op.w end
+        if R.op.y + 1 > acc.y1 then acc.y1 = R.op.y + 1 end
+      end
+    end
+  end
+  for _, acc in pairs(sprites) do
+    local ptype = M.SPRITE_SHAPES[acc.runs .. "," .. acc.px]
+    if ptype then
+      place(acc.c, acc.r, acc.side, ptype,
+        { x0 = acc.x0, y0 = acc.y0, x1 = acc.x1, y1 = acc.y1, sprite = true })
+    else
+      f.unknownSprites = (f.unknownSprites or 0) + 1
+    end
+  end
+  f.spriteMode = next(sprites) ~= nil
+
+  -- Letters: the fallback the game uses on squares too small for the art.
   for _, L in ipairs(letters) do
     local c, r = cellAt(L.op.x, L.op.y)
     if c and not inPanel(L.op) then
       L.op.piece = true
-      f.cells[#f.cells + 1] = { c = c, r = r, side = L.side, type = L.type, op = L.op }
-      f.grid[r * 8 + c + 1] = L.side * 8 + L.type
+      place(c, r, L.side, L.type, { op = L.op })
     end
   end
 

@@ -179,6 +179,10 @@ squares that is the difference between playing and guessing. A king in check
 gets its square painted red, and keeps it after mate, which is the answer to
 "why is that the end".
 
+The pieces are [Pixel Chess](https://brosen.itch.io/pixel-chess) by **brosen**,
+drawn at their native 16x16 inside the 21-pixel squares. See
+[Drawing the pieces](#drawing-the-pieces) for why they are not images.
+
 Castling, en passant, promotion to any of the four pieces, checkmate,
 stalemate, the fifty-move rule, threefold repetition and insufficient material
 are all there. Promotion raises a chooser rather than assuming a queen:
@@ -228,6 +232,43 @@ inside the search.
 Moves are packed into a single integer rather than a table, and the search uses
 make/unmake with an undo record rather than copying the board — a table per
 node would have spent more time in the collector than in the search.
+
+### Drawing the pieces
+
+The Nspire can draw images — `gc:drawImage` has existed since apilevel 1.0, and
+`image.new()` builds one from a binary string — but the byte layout of that
+string is documented only by TI, and getting it wrong shows up on hardware as a
+blank screen with nothing to debug.
+
+These sprites do not need it. They are 1-bit masks: three colours in the whole
+set (transparent, opaque white, opaque black), and the white and black files
+are the *same silhouette* in two inks. So `tools/sprites.py` turns each one
+into horizontal runs and the game draws them with `fillRect` — API this repo's
+mock and PNG renderer already model and already test. Nothing in the shared
+harness had to change to support them.
+
+A whole 32-piece board is about 940 rects in **four** `setColorRGB` calls: the
+runs are grouped rim-then-fill, per side, because setting a colour is a call
+and doing it per piece would be a hundred of them. Chess repaints on input
+rather than on a timer, so that is a per-keypress cost and not a per-frame one.
+
+The rim is the part that is not in the original art — it is the 8-connected
+dilation of the mask, drawn in the opposite ink. Without it a white piece on a
+light square and a black piece on a dark square are both nearly invisible.
+
+Below 16-pixel squares there is no room for a 16x16 sprite and no scaling
+available, so the game falls back to letters on discs rather than cropping
+them. Both paths are exercised by `tests/chess/ui.lua`, which reads pieces back
+out of the painted frame either way — a sprite is identified by how many runs
+it is drawn in and how many pixels they cover, a pair that is unique across the
+six pieces.
+
+Regenerate after changing the art in `assets/chess/`:
+
+```
+python3 tools/sprites.py            # rewrite the block in src/chess/main.lua
+python3 tools/sprites.py --check    # exit 1 if it is out of date
+```
 
 ### The bot
 
@@ -325,6 +366,7 @@ document from there — same result, more clicking.
 ```
 src/<game>/game.lua       rules -- pure Lua, no calculator APIs
 src/<game>/main.lua       drawing, input and timing for the Nspire
+assets/<game>/            source art, where a game has any
 tests/<game>/run.lua      logic tests
 tests/<game>/frame.lua    reads a game's state back out of a painted frame
 tests/<game>/ui.lua       game-specific frame assertions
@@ -333,6 +375,7 @@ tests/<game>/autoplay.lua plays itself, for screenshots
 tests/nspire_stub.lua     shared: mock of the Nspire runtime
 tests/run_ui.lua          shared: game-agnostic runtime tests
 tools/                    shared: bundler, frame capture, PNG renderer
+tools/sprites.py          chess only: piece art -> Lua run-length spans
 build/<game>/<game>.lua   generated: the script that goes into the .tns
 <Game>.tns                generated: the file you copy to the calculator
 ```
@@ -408,6 +451,15 @@ CX II images and opens `.tns` files directly, with a Lua console for live
 poking. This is the last check before real hardware. It needs a boot image and
 OS dumped from a calculator you own.
 
+## Credits
+
+The chess pieces are [Pixel Chess](https://brosen.itch.io/pixel-chess) by
+**brosen**, used under the pack's own terms. The source PNGs are kept in
+`assets/chess/` exactly as published; `tools/sprites.py` is what turns them
+into something a calculator can draw.
+
+Everything else here is original.
+
 ## What isn't verified
 
 The tests and screenshots run against a *model* of the calculator, not the
@@ -435,7 +487,13 @@ calculator. Two things only real hardware can settle:
   unaffected: it is turn-based, and a coarse timer only makes its slide
   animation longer, and Connect Four and Chess only spend longer on the bot's
   turn.
+- **Whether `fillRect` is fast enough for the pieces.** A full board is ~940
+  rects per repaint. On this container that is imperceptible, and chess only
+  repaints when you press a key, but the handheld is the one that has to draw
+  them. If it turns out too slow the fix is cheap — drop the rim and fall back
+  to the plain silhouettes, which is 336 rects.
 - **Whether the font has chess glyphs.** It is not verified that the Nspire's
   font carries U+2654–U+265F, and a missing glyph on this OS is a silent empty
   box — which across sixty-four squares would be unreadable rather than merely
-  ugly. So Chess draws letters on coloured discs and does not try.
+  ugly. Chess never tries: pieces are sprites, and the small-window fallback is
+  plain Latin letters.

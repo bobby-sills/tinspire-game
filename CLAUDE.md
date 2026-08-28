@@ -97,6 +97,14 @@ require string is always `"game"` regardless of the local's name.
 - **Repaint is all-or-nothing.** `platform.window:invalidate()` redraws
   everything; only call it when something changed. A turn-based game can skip
   the timer entirely and repaint on input.
+- **Sprite art does not have to mean `image.new`.** `gc:drawImage` exists, but
+  the binary layout `image.new` wants is documented only by TI (blocked here),
+  and a wrong guess paints nothing with no error. 1-bit art can go in as
+  horizontal runs drawn with `fillRect` instead, which is API the mock and the
+  PNG renderer already model -- chess does this for a whole 32-piece board in
+  ~940 rects and four `setColorRGB` calls, and needed no harness changes at
+  all. `tools/sprites.py` is the worked example; group runs by colour, because
+  the colour change is the expensive part, not the rect.
 - **Font metrics are unknown until runtime.** Always size boxes with
   `gc:getStringWidth`, never a character-count estimate. Have layouts degrade
   when text is wider than expected rather than assuming it fits.

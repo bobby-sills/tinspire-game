@@ -137,6 +137,14 @@ function stub.newGC()
   return gc, calls, ops
 end
 
+-- Saved before stub.load replaces math.randomseed below. Without it the
+-- replacement would stop the *next* load from reseeding, so only the first
+-- boot in a process would be pinned and every one after it would run on
+-- wherever the stream had got to. Also exposed, for a test that needs to
+-- predict what the script under test is about to draw.
+local realRandomseed = math.randomseed
+stub.randomseed = realRandomseed
+
 -- Installs the globals a .tns script expects, then loads and runs `path`.
 -- Returns the harness handle (window state, timer state, paint driver).
 -- seed: pins the RNG so a run is reproducible. A game deliberately reseeds
@@ -146,7 +154,7 @@ end
 -- sequence here and neutralise the script's own reseeding for the run.
 function stub.load(path, w, h, seed)
   w, h = w or 318, h or 212
-  math.randomseed(seed or 20240101)
+  realRandomseed(seed or 20240101)
   math.random(); math.random()
   math.randomseed = function() end
 

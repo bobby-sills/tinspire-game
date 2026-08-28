@@ -11,10 +11,12 @@ Games: `snake` (grid-stepped, turn-based feel), `flappy` (continuous physics,
 fixed timestep), `2048` (strictly turn-based: no game loop, repaints on input,
 timer used only for the slide animation), `connect4` (turn-based, plus a
 search that has to be sliced across timer ticks), `chess` (the same, with
-rules complicated enough that verifying them is most of the work) and `wordle`
+rules complicated enough that verifying them is most of the work), `wordle`
 (text input rather than steering, bulk data baked into the bundle, and a rule
-whose correctness is the whole job). Between them they cover the shapes a new
-game is likely to take — read whichever is closest to what you're building.
+whose correctness is the whole job) and `klondike` (hidden state, unlimited
+undo, and a layout that has to adapt at paint time to how much it is asked to
+show). Between them they cover the shapes a new game is likely to take — read
+whichever is closest to what you're building.
 
 ## Commands
 
@@ -43,6 +45,7 @@ tools/bundle.py         inlines game+main into one file -- shared
 tools/screenshot.lua    frame capture driver            -- shared
 tools/render.py         draw-ops -> PNG                 -- shared
 tools/fontmetrics.py    font metrics for the mock       -- shared
+tools/cardart.py        klondike only: card art -> Lua run-length spans
 tools/wordlist.py       wordle only: lists -> Lua string
 assets/<game>/          source data, where a game has any
 ```
@@ -92,6 +95,18 @@ require string is always `"game"` regardless of the local's name.
   whenever the budget runs out. Keep the sliced thing in `game.lua` so tests
   can drive it straight through and check that slicing changes only *when* it
   answers, never *what*.
+- **Hidden state is where the bugs live, and undo is where they surface.** If
+  a game has information the player cannot see, prefer make/unmake against a
+  small undo record over a snapshot per move -- it is smaller, it makes undo
+  unlimited for free, and it forces you to write down exactly what a move
+  changed. Record the *concealment* too: `src/klondike/game.lua` stores whether
+  a move turned a face-down card up, because an undo that leaves it face-up has
+  handed the player information the position never contained, and nothing on
+  screen says so. Test it by fuzzing every legal move from thousands of
+  positions: make it, unmake it, and compare a serialisation of the *entire*
+  state, hidden parts included. `tests/chess/run.lua` and
+  `tests/klondike/run.lua` both do this, and it is the highest-value test in
+  either file.
 - **Anything long-running gets a copy of the state, not the live one.** A
   suspended search is suspended mid-mutation; if it shares the board with the
   renderer, `on.paint` draws its half-explored guesses. Connect Four hit this
@@ -101,7 +116,9 @@ require string is always `"game"` regardless of the local's name.
   example of what that costs: no bitboards, and the textbook 0x88 board is out
   too since it is an AND — a padded mailbox instead, where off-board detection
   is one array lookup. Zobrist hashing needs XOR, so repetition detection
-  builds a string key and counts it in a table.
+  builds a string key and counts it in a table. `src/klondike/game.lua` encodes
+  a card as one integer `(suit - 1) * 13 + rank` and unpacks it with division
+  and modulo, for the same reason.
 - **Repaint is all-or-nothing.** `platform.window:invalidate()` redraws
   everything; only call it when something changed. A turn-based game can skip
   the timer entirely and repaint on input.
@@ -113,6 +130,17 @@ require string is always `"game"` regardless of the local's name.
   ~940 rects and four `setColorRGB` calls, and needed no harness changes at
   all. `tools/sprites.py` is the worked example; group runs by colour, because
   the colour change is the expensive part, not the rect.
+- **Encode only what is not a flat fill.** A sprite that is mostly one colour
+  should be a couple of rects plus run-encoded ink, not runs all the way
+  through: `tools/cardart.py` takes a 37x52 card from 1924 pixels to ~150 runs
+  that way, and packs each run into three printable ASCII characters rather
+  than a comma-separated list of numbers, which is a third of the source size
+  and decodes with `string.byte` alone. Emit the runs in row order so a
+  partially covered sprite can stop reading as soon as it passes the bottom of
+  its visible strip. Whatever the scheme, have the generator rebuild each
+  sprite from what it emitted and compare against the source image -- a
+  mis-encoded sprite is otherwise a silent wrong picture on the handheld and
+  nowhere else.
 - **Font metrics are unknown until runtime.** Always size boxes with
   `gc:getStringWidth`, never a character-count estimate. Have layouts degrade
   when text is wider than expected rather than assuming it fits.

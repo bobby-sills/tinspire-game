@@ -139,8 +139,16 @@ end
 
 -- Installs the globals a .tns script expects, then loads and runs `path`.
 -- Returns the harness handle (window state, timer state, paint driver).
-function stub.load(path, w, h)
+-- seed: pins the RNG so a run is reproducible. A game deliberately reseeds
+-- itself from os.time() plus idle ticks, because a freshly reset handheld can
+-- report the same time every launch -- good on the device, useless in a test,
+-- where a failure you cannot reproduce is barely a failure at all. So seed the
+-- sequence here and neutralise the script's own reseeding for the run.
+function stub.load(path, w, h, seed)
   w, h = w or 318, h or 212
+  math.randomseed(seed or 20240101)
+  math.random(); math.random()
+  math.randomseed = function() end
 
   local harness = { invalidated = 0, timerPeriod = nil, timerRunning = false, w = w, h = h }
 

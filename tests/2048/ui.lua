@@ -156,10 +156,15 @@ return function(t)
     end
 
     ok(checked > 500, "measured a lot of labels (" .. checked .. ")")
-    ok((byDigits[3] or 0) > 0, "the autopilot reached a three-digit tile at 318x212")
-    ok(byDigits[3] < (byDigits[1] or 0),
-      string.format("at 318x212 three digits (%d) are set smaller than one (%d)",
-        byDigits[3] or 0, byDigits[1] or 0))
+    -- Guard rather than compare straight away: if the autopilot never reached
+    -- 128 the next assertion would crash on a nil instead of reporting which
+    -- expectation actually broke.
+    if ok((byDigits[3] or 0) > 0, "the autopilot reached a three-digit tile at 318x212") ~= false
+      and byDigits[3] then
+      ok(byDigits[3] < (byDigits[1] or 0),
+        string.format("at 318x212 three digits (%d) are set smaller than one (%d)",
+          byDigits[3], byDigits[1] or 0))
+    end
   end)
 
   test("2048: undo puts the previous board back on screen", function()

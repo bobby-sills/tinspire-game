@@ -1,11 +1,11 @@
-# Snake, Flappy Bird, 2048 and Connect Four for the TI-Nspire CX II
+# Snake, Flappy Bird, 2048, Connect Four and Chess for the TI-Nspire CX II
 
-Four games written in TI-Nspire Lua. They install by drag-and-drop — no
+Five games written in TI-Nspire Lua. They install by drag-and-drop — no
 Ndless, no jailbreak, no root.
 
 **Grab [`Snake.tns`](Snake.tns), [`Flappy.tns`](Flappy.tns),
-[`2048.tns`](2048.tns) or [`Connect4.tns`](Connect4.tns) and copy it onto your
-calculator.**
+[`2048.tns`](2048.tns), [`Connect4.tns`](Connect4.tns) or
+[`Chess.tns`](Chess.tns) and copy it onto your calculator.**
 
 ## Snake
 
@@ -154,9 +154,122 @@ what was measured to pick them, are in the comment above `Board.LEVELS` in
 ![The bot thinking](docs/screenshots/connect4-thinking.png)
 ![Game over](docs/screenshots/connect4-gameover.png)
 
+## Chess
+
+![The menu](docs/screenshots/chess-menu.png)
+![A piece picked up](docs/screenshots/chess-selected.png)
+
+Full legal chess. Two players on one calculator, or one player against a bot
+with three difficulties.
+
+| Key | Action |
+| --- | --- |
+| Arrows | Move the cursor (and choose on the menu and the promotion panel) |
+| `enter` | Pick a piece up, then put it down on a square |
+| `esc` | Put the piece back down; again to pause; from a finished game, the menu |
+| `U` | Take the last move back |
+| `F` | Turn the board round |
+| `R` | Restart the game |
+| `M` | Back to the title screen |
+| Click | Same as moving the cursor there and pressing `enter` |
+
+Picking a piece up lights its square and marks every square it may legally go
+to — a dot for a quiet move, a ring for a capture. On a board of twenty-pixel
+squares that is the difference between playing and guessing. A king in check
+gets its square painted red, and keeps it after mate, which is the answer to
+"why is that the end".
+
+Castling, en passant, promotion to any of the four pieces, checkmate,
+stalemate, the fifty-move rule, threefold repetition and insufficient material
+are all there. Promotion raises a chooser rather than assuming a queen:
+underpromotion to a knight is the one that wins games.
+
+"Two players" means two players **on one calculator**, taking turns. Nspire Lua
+has no networking of any kind — no sockets, no link cable, no wireless — so
+hot-seat is the only multiplayer there can be. Because both players are on the
+same side of the screen, the menu offers to turn the board round between turns.
+
+![The bot thinking](docs/screenshots/chess-thinking.png)
+![Checkmate](docs/screenshots/chess-checkmate.png)
+
+### How the rules are checked
+
+Move generation is the whole game: get it wrong and everything above is
+decoration. It is verified by **perft**, which counts the leaves of the legal
+move tree to a given depth. The counts for a handful of standard positions are
+published and exact, so matching them proves castling, en passant, promotion
+and check evasion all at once — in combinations nobody would think to write a
+test for.
+
+| Position | Depth 1 | 2 | 3 | 4 | 5 |
+| --- | --- | --- | --- | --- | --- |
+| Initial | 20 | 400 | 8,902 | 197,281 | 4,865,609 |
+| Kiwipete | 48 | 2,039 | 97,862 | 4,085,603 | |
+| Position 3 | 14 | 191 | 2,812 | 43,238 | 674,624 |
+| Position 4 | 6 | 264 | 9,467 | 422,333 | |
+| Position 5 | 44 | 1,486 | 62,379 | 2,103,487 | |
+| Position 6 | 46 | 2,079 | 89,890 | 3,894,594 | |
+
+All six match. `make GAME=chess test` runs them to depth 3 (and position 3 to
+5); `CHESS_SLOW=1 make GAME=chess test` runs every depth in the table, which
+takes a couple of minutes because 4.8M nodes of interpreted Lua is not a unit
+test.
+
+The board is a **10x12 padded mailbox**, not bitboards and not 0x88. Lua 5.1
+has no bitwise operators and the Nspire has no `bit` library, so bitboards are
+out — and 64 bits does not fit exactly in a double anyway. The textbook 0x88
+trick is `sq & 0x88`, which without an AND is worse than useless. The padding
+makes "is that off the board?" a single array lookup, and the two border rows
+at each end are what keep a knight's reach inside the array from every square.
+Repetition detection, which normally wants Zobrist hashing, builds a string key
+instead and counts it in a table; it happens once per played move and never
+inside the search.
+
+Moves are packed into a single integer rather than a table, and the search uses
+make/unmake with an undo record rather than copying the board — a table per
+node would have spent more time in the collector than in the search.
+
+### The bot
+
+Same shape as Connect Four's, and for the same reason: there are no threads on
+this machine, so a search that ran to completion inside one `on.timer()`
+callback would freeze the screen and queue up keypresses for as long as it
+took, which to a player is indistinguishable from a crash. `ai:think(n)`
+advances an explicit state machine by `n` nodes and answers either with a move
+or "still thinking"; `main.lua` feeds it one slice per tick and paints an
+indicator. Because the search is pure logic, the tests drive the very same code
+straight through and check that slicing changes *when* it answers and never
+*what*.
+
+Iterative deepening with alpha-beta, captures first by MVV-LVA, and a
+quiescence search that extends captures only. That last one is not optional: a
+two-ply search without it stops in the middle of an exchange and counts the
+half that went its way, so it hangs pieces constantly. There is a test for
+exactly that — the same position, with and without.
+
+Evaluation is material plus piece-square tables, kept as a running total by
+make/unmake so a leaf costs one field read.
+
+**Depth is honestly two to three ply**, plus quiescence. That is what
+interpreted Lua on a 396 MHz ARM supports, and the bot is built for it: it
+plays legal, sensible chess and punishes a hanging piece. It does not play
+well, and is not meant to.
+
+So difficulty comes from move **selection**, not depth — there is no room left
+to search less. Every level searches about as deeply as it can, then picks from
+the scored root moves with a temperature-weighted softmax: at temperature zero
+that is the best move, and as it rises, moves within a pawn or two start to
+come up. Easy plays plausible moves that are merely not the best ones, which is
+a very different thing from "a random move with probability p" — uniform
+blunders are instantly recognisable as a computer throwing a game away.
+
+![The promotion chooser](docs/screenshots/chess-promotion.png)
+
 Snake, Flappy and 2048 keep high scores for the session, and Connect Four
 keeps a match tally. They reset when you close the document, because writing
-one back would mean saving the document on every death.
+one back would mean saving the document on every death. Chess keeps nothing
+between games, but `U` will walk a game back move by move for as long as you
+have the patience.
 
 ## Installing
 
@@ -165,8 +278,8 @@ one back would mean saving the document on every death.
    nothing to install, but it **requires Chrome**; Safari has no WebUSB and
    will fail in a way that looks like a hardware fault. TI-Nspire Student or
    Teacher Software works too.
-2. Drag `Snake.tns`, `Flappy.tns`, `2048.tns` or `Connect4.tns` into the
-   calculator's file list. They must land in **My Documents** directly, not a
+2. Drag `Snake.tns`, `Flappy.tns`, `2048.tns`, `Connect4.tns` or `Chess.tns`
+   into the calculator's file list. They must land in **My Documents** directly, not a
    subfolder.
 3. On the handheld, open **My Documents**, pick one, and press `enter`.
 
@@ -186,6 +299,7 @@ make GAME=snake                # build Snake.tns   (GAME defaults to snake)
 make GAME=flappy               # build Flappy.tns
 make GAME=2048                 # build 2048.tns
 make GAME=connect4             # build Connect4.tns
+make GAME=chess                # build Chess.tns
 make GAME=flappy test          # that game's logic + runtime tests
 make GAME=flappy screenshots   # preview PNGs -> build/flappy/screenshots
 make all-games                 # build everything under src/
@@ -212,6 +326,7 @@ document from there — same result, more clicking.
 src/<game>/game.lua       rules -- pure Lua, no calculator APIs
 src/<game>/main.lua       drawing, input and timing for the Nspire
 tests/<game>/run.lua      logic tests
+tests/<game>/frame.lua    reads a game's state back out of a painted frame
 tests/<game>/ui.lua       game-specific frame assertions
 tests/<game>/autoplay.lua plays itself, for screenshots
 
@@ -261,6 +376,19 @@ Between them those caught two bugs that no amount of reading would have: the
 search left its discs on the board when a budget ran out part-way, and the
 board being painted was the board being searched.
 
+Chess is checked the same way and then some. Perft is the centre of it — see
+the table above — because a rule test can only be as good as the case someone
+thought to write, while perft counts every leaf of the whole move tree against
+a number the outside world already knows. On top of that: castling rejected out
+of, through and into check but *not* when only b1 is attacked, which is the
+half of that rule usually got wrong; en passant legal only on the move right
+after the double push, and rejected when taking would uncover the king; every
+drawing rule; the pruned search against a plain negamax written in the test
+file; the sliced search against the one-shot, node for node; and mate-in-one
+and mate-in-two positions, each proved to be one by a brute-force prover in the
+test before the bot is asked to find it. That last habit caught two of the
+author's own "mate in one" positions being nothing of the sort.
+
 `tests/run_ui.lua` loads the *actual bundled script* against
 `tests/nspire_stub.lua`, a mock of the calculator's runtime that is
 deliberately stricter than the real one: it rejects colours outside 0–255,
@@ -291,7 +419,8 @@ calculator. Two things only real hardware can settle:
   title rather than letting a long score collide with it. But the preview
   images are representative, not exact.
 - **Bot speed.** How many search nodes a second the handheld manages is the
-  one number in Connect Four that is an estimate rather than a measurement —
+  one number in Connect Four and Chess that is an estimate rather than a
+  measurement —
   the container the tests run on is an x86 desktop. The design does not depend
   on getting it right: the bot's turn is capped in *ticks*, and iterative
   deepening means a slower machine simply plays a shallower search rather than
@@ -304,4 +433,9 @@ calculator. Two things only real hardware can settle:
   they run proportionally slower — they won't misbehave, but Snake's top speeds
   may not be reachable, and Flappy will feel heavier than intended. 2048 is
   unaffected: it is turn-based, and a coarse timer only makes its slide
-  animation longer, and Connect Four only spends longer on the bot's turn.
+  animation longer, and Connect Four and Chess only spend longer on the bot's
+  turn.
+- **Whether the font has chess glyphs.** It is not verified that the Nspire's
+  font carries U+2654–U+265F, and a missing glyph on this OS is a silent empty
+  box — which across sixty-four squares would be unreadable rather than merely
+  ugly. So Chess draws letters on coloured discs and does not try.

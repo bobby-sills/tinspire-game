@@ -140,14 +140,6 @@ function Wordle.score(guess, answer)
   return marks
 end
 
--- Marks as a five-character key, for comparing two scorings cheaply and for
--- the candidate filter below. Also what the end-of-game share grid renders.
-function Wordle.pattern(marks)
-  local out = {}
-  for i = 1, LEN do out[i] = marks[i] end
-  return table.concat(out)
-end
-
 -- ------------------------------------------------------------------- game --
 
 -- Accepts whatever on.charIn hands over -- which includes "", " " and "\n"
@@ -183,7 +175,6 @@ function Wordle:reset(answer)
   -- for yet.
   self.possible = nil
   self.filter = nil
-  self.filtered = 0
 end
 
 function Wordle:start()
@@ -366,7 +357,6 @@ function Wordle:filterStep(budget)
   end
 
   f.i = last + 1
-  self.filtered = n > 0 and (f.i - 1) / n or 1
   if f.i > n then
     self.possible = f.kept
     self.filter = nil
@@ -14189,6 +14179,8 @@ local FONT_STEPS = { 24, 16, 12, 11, 10, 9, 7 }
 
 local KB_ROWS = { "qwertyuiop", "asdfghjkl", "zxcvbnm" }
 
+local A = string.byte("a")
+
 local ui = { w = 318, h = 212, keys = {} }
 local game = Wordle.new()
 
@@ -14412,7 +14404,7 @@ local function relayout()
   -- opens up above it belongs to the status text and the end-of-game result.
   local kbH = math.max(12, math.min(math.floor(ui.ph * (ui.side and 0.34 or 0.95)), 64))
   local kbY = ui.py + ui.ph - kbH
-  ui.keys, ui.kbH = layoutKeys(ui.px, kbY, ui.pw, kbH)
+  ui.keys = layoutKeys(ui.px, kbY, ui.pw, kbH)
   ui.kbY = kbY
   ui.textH = math.max(0, kbY - ui.py - 2)
 end
@@ -14486,7 +14478,7 @@ local function drawKeyboard(gc)
   for _, k in ipairs(ui.keys) do
     local fill, ink = KEY_FILL, KEY_TEXT
     if #k.key == 1 then
-      local m = marks[string.byte(k.key) - 96] or UNKNOWN
+      local m = marks[string.byte(k.key) - A + 1] or UNKNOWN
       if m ~= UNKNOWN then
         fill = MARK_FILL[m]
         if m == GREY then ink = KEY_DIM end

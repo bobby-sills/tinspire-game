@@ -54,6 +54,8 @@ local FONT_STEPS = { 24, 16, 12, 11, 10, 9, 7 }
 
 local KB_ROWS = { "qwertyuiop", "asdfghjkl", "zxcvbnm" }
 
+local A = string.byte("a")
+
 local ui = { w = 318, h = 212, keys = {} }
 local game = Wordle.new()
 
@@ -277,7 +279,7 @@ local function relayout()
   -- opens up above it belongs to the status text and the end-of-game result.
   local kbH = math.max(12, math.min(math.floor(ui.ph * (ui.side and 0.34 or 0.95)), 64))
   local kbY = ui.py + ui.ph - kbH
-  ui.keys, ui.kbH = layoutKeys(ui.px, kbY, ui.pw, kbH)
+  ui.keys = layoutKeys(ui.px, kbY, ui.pw, kbH)
   ui.kbY = kbY
   ui.textH = math.max(0, kbY - ui.py - 2)
 end
@@ -351,7 +353,7 @@ local function drawKeyboard(gc)
   for _, k in ipairs(ui.keys) do
     local fill, ink = KEY_FILL, KEY_TEXT
     if #k.key == 1 then
-      local m = marks[string.byte(k.key) - 96] or UNKNOWN
+      local m = marks[string.byte(k.key) - A + 1] or UNKNOWN
       if m ~= UNKNOWN then
         fill = MARK_FILL[m]
         if m == GREY then ink = KEY_DIM end

@@ -132,14 +132,6 @@ function Wordle.score(guess, answer)
   return marks
 end
 
--- Marks as a five-character key, for comparing two scorings cheaply and for
--- the candidate filter below. Also what the end-of-game share grid renders.
-function Wordle.pattern(marks)
-  local out = {}
-  for i = 1, LEN do out[i] = marks[i] end
-  return table.concat(out)
-end
-
 -- ------------------------------------------------------------------- game --
 
 -- Accepts whatever on.charIn hands over -- which includes "", " " and "\n"
@@ -175,7 +167,6 @@ function Wordle:reset(answer)
   -- for yet.
   self.possible = nil
   self.filter = nil
-  self.filtered = 0
 end
 
 function Wordle:start()
@@ -358,7 +349,6 @@ function Wordle:filterStep(budget)
   end
 
   f.i = last + 1
-  self.filtered = n > 0 and (f.i - 1) / n or 1
   if f.i > n then
     self.possible = f.kept
     self.filter = nil

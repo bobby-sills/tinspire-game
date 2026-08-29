@@ -1,12 +1,12 @@
-# Snake, Flappy Bird, 2048, Connect Four, Chess and Wordle for the TI-Nspire CX II
+# Snake, Flappy Bird, 2048, Connect Four, Chess, Wordle and Klondike for the TI-Nspire CX II
 
-Six games written in TI-Nspire Lua. They install by drag-and-drop — no
+Seven games written in TI-Nspire Lua. They install by drag-and-drop — no
 Ndless, no jailbreak, no root.
 
 **Grab [`Snake.tns`](Snake.tns), [`Flappy.tns`](Flappy.tns),
 [`2048.tns`](2048.tns), [`Connect4.tns`](Connect4.tns),
-[`Chess.tns`](Chess.tns) or [`Wordle.tns`](Wordle.tns) and copy it onto your
-calculator.**
+[`Chess.tns`](Chess.tns), [`Wordle.tns`](Wordle.tns) or
+[`Klondike.tns`](Klondike.tns) and copy it onto your calculator.**
 
 ## Snake
 
@@ -438,6 +438,134 @@ entry gets noticed.
 Bitwise tricks are out anyway: this is Lua 5.1 with no `bit` library on the
 Nspire, so no letter-presence masks. Plain arithmetic and a 26-element array.
 
+## Klondike
+
+![The deal](docs/screenshots/klondike-deal.png)
+![A run picked up](docs/screenshots/klondike-selected.png)
+
+Solitaire, the one that shipped with Windows. Seven columns, four foundations,
+and a stock you turn over one card or three at a time. Arrows move between
+piles and up and down inside a column, `enter` picks a run up and `enter`
+again puts it down, `esc` cancels. Clicking works too — a card or pile under
+the point, two clicks to a move.
+
+The menu offers **draw one or draw three**, **unlimited or three stock
+passes**, and an optional autoplay that sends cards to the foundations once
+they are provably safe. `U` undoes, all the way back to the deal; `R` deals
+the same game again, `N` a new one.
+
+**Every pile it can legally go to is highlighted**, not just the card you are
+holding. On a 318-pixel screen that is the difference between playing and
+guessing, and it is the same thing that made the chess board usable. The
+highlights come from filtering the rules' own move list, so a highlighted
+destination and an accepted move cannot disagree — and `tests/klondike/ui.lua`
+checks that against the rules over a few hundred selections anyway.
+
+### The deck is the invariant
+
+Klondike's rules fit in a sentence: descending alternating colours down the
+tableau, ascending same-suit from the ace up the foundations. That is not
+where an implementation goes wrong. It goes wrong in the bookkeeping, so
+`tests/klondike/run.lua` is almost entirely properties asserted continuously
+over a fuzz of random legal play rather than scripted games:
+
+- the union of every pile is **exactly one of each of the 52 rank/suit pairs**,
+  at every single step;
+- every face-up run in a column is a valid descending alternating sequence —
+  something the rules must *maintain*, not merely check when offering a move;
+- a column's face-down count never increases, and only ever falls by one, and
+  only when the cards above it have gone;
+- **make and unmake are exact inverses**, down to which cards are face-down,
+  the stock/waste split, the pass count and the score;
+- the generator and the validator agree **in both directions** — every move
+  `legalMoves()` offers is accepted, and every move `play()` accepts was
+  offered. A one-way check misses a whole class of bug.
+
+Undo is unlimited and works by make/unmake against a small record, not a
+snapshot per move. The record carries whether the move turned a face-down card
+up, because an undo that leaves it face-up has handed the player information
+the position never contained — and that is invisible on screen.
+
+### Turning the waste back over
+
+The draw-3 ordering is the one part of Klondike that is easy to get subtly
+backwards while still looking right. Cards are turned onto the waste **one at
+a time**, so a group of three arrives reversed: with the stock reading A, B, C
+from the top, the player turns A face-up first and covers it with B and then
+C, and it is C — the third card down — that ends up playable.
+
+Recycling is the same operation run over the whole waste, which makes it the
+exact inverse of drawing. That gives a property worth testing rather than
+eyeballing: **draw the entire stock away, recycle, and the stock is the
+identical array it started as**, so a second pass deals the same cards in the
+same groups of three. A backwards recycle still counts down and still refills.
+It just deals a different partition of the deck every pass, which is a
+different and much easier game. The first version here had exactly that bug,
+and this test is what caught it.
+
+### Drawing the cards
+
+The cards are 37x52 pixels of someone else's pixel art, drawn at 1:1 — pixel
+art at a fractional scale is ruined pixel art, so seven columns of 37 across a
+318-pixel screen is the layout, not a choice. Below about 279 pixels wide the
+game says the window is too small instead of drawing a broken board.
+
+As with the chess pieces, `gc:drawImage` is avoided: the byte layout
+`image.new` wants is documented only by TI, and a wrong guess paints nothing
+with no error. But a card is not a chess piece — it is mostly a solid block of
+one colour. So the body is two rects, the frame (pixel-identical across all 53
+sprites, and checked to be) is eight more, and only the ink left over is
+run-encoded, three printable characters per run. That is about 150 runs for a
+typical card and 24 KB for the whole deck. `tools/cardart.py` rebuilds every
+sprite from the spans it emitted and compares against the PNG pixel for pixel,
+so a card that would draw wrong on the calculator is a build failure here.
+
+A whole frame is about 2,700 rects — Chess draws a board in 940 — but Klondike
+repaints on a key press and never on a timer, so that is a per-keypress cost.
+
+### Fanning a column
+
+![Foundations filling](docs/screenshots/klondike-playing.png)
+![A game won](docs/screenshots/klondike-win.png)
+
+A column can reach six face-down cards under a full king-to-ace run of
+thirteen. Sizing every column for that worst case would force about six pixels
+on all of them and ruin the common case, so the fan is worked out **per column
+at paint time** from what that column actually holds.
+
+The art puts a rank glyph and a suit pip in the top-left corner, which is what
+makes fanning possible at all: a covered card only shows its top strip, and
+nine visible rows are enough for the rank, sixteen for the rank and the suit.
+Art that centred a large pip with no corner index could not be fanned, and the
+game would have had to draw an index over the top of it.
+
+Room is bought by squeezing the face-down block first, one pixel at a time,
+because those cards are identical backs and carry nothing. Only when that runs
+out does the face-up step drop below what shows a rank. Every card is drawn
+clipped to the strip a player can actually see, which is both the optimisation
+and the reason the tableau can never be overrun: containment is structural,
+not arithmetic.
+
+### The solver
+
+`tests/klondike/solver.lua` is a depth-first search with a transposition set
+and a node budget. It exists for two reasons, neither of them shipping to the
+calculator: it drives millions of states through the rules engine, and a deal
+it *wins* is an end-to-end proof that a legal path to all-foundations exists.
+Backtracking is the engine's own make/unmake, so a single deal unwinds tens of
+thousands of moves and any state undo failed to restore would send the search
+somewhere the position never allowed.
+
+Its win rate is **printed, not asserted**: around 40-45% at draw-1 and 18% at
+draw-3, which is well below what a perfect-information solver manages and
+exactly what you would expect from a heuristic that drops
+foundation-to-tableau moves to keep the search finite. There is no honest
+published figure to check a number like that against, so it is reported as an
+observation.
+
+The screenshots above are that solver playing through the real UI, clicks and
+all — including the win, which is a deal it actually solved.
+
 ## Installing
 
 1. Connect the calculator over USB. On a Mac the easiest route is
@@ -445,8 +573,8 @@ Nspire, so no letter-presence masks. Plain arithmetic and a 26-element array.
    nothing to install, but it **requires Chrome**; Safari has no WebUSB and
    will fail in a way that looks like a hardware fault. TI-Nspire Student or
    Teacher Software works too.
-2. Drag `Snake.tns`, `Flappy.tns`, `2048.tns`, `Connect4.tns`, `Chess.tns` or
-   `Wordle.tns` into the calculator's file list. They must land in **My Documents** directly, not a
+2. Drag `Snake.tns`, `Flappy.tns`, `2048.tns`, `Connect4.tns`, `Chess.tns`,
+   `Wordle.tns` or `Klondike.tns` into the calculator's file list. They must land in **My Documents** directly, not a
    subfolder.
 3. On the handheld, open **My Documents**, pick one, and press `enter`.
 
@@ -468,6 +596,7 @@ make GAME=2048                 # build 2048.tns
 make GAME=connect4             # build Connect4.tns
 make GAME=chess                # build Chess.tns
 make GAME=wordle               # build Wordle.tns
+make GAME=klondike             # build Klondike.tns
 make GAME=flappy test          # that game's logic + runtime tests
 make GAME=flappy screenshots   # preview PNGs -> build/flappy/screenshots
 make all-games                 # build everything under src/
@@ -503,6 +632,7 @@ tests/nspire_stub.lua     shared: mock of the Nspire runtime
 tests/run_ui.lua          shared: game-agnostic runtime tests
 tools/                    shared: bundler, frame capture, PNG renderer
 tools/sprites.py          chess only: piece art -> Lua run-length spans
+tools/cardart.py          klondike only: card art -> Lua run-length spans
 tools/wordlist.py         wordle only: word lists -> a Lua string to search
 build/<game>/<game>.lua   generated: the script that goes into the .tns
 <Game>.tns                generated: the file you copy to the calculator
@@ -560,6 +690,16 @@ and mate-in-two positions, each proved to be one by a brute-force prover in the
 test before the bot is asked to find it. That last habit caught two of the
 author's own "mate in one" positions being nothing of the sort.
 
+Klondike has almost no rule tests at all, because that is not where a solitaire
+implementation breaks. Its suite is a continuous fuzz that re-checks the deck,
+the tableau runs, the foundations and the face-down counts after every one of
+tens of thousands of random legal moves, plus make/unmake exactness over every
+legal move from thousands of positions and a two-way comparison of the move
+generator against the validator. The one derived rule test that is written out
+longhand — draw the whole stock, recycle, and demand the identical array back —
+is the one that found a real bug: the draw-3 groups were arriving on the waste
+the wrong way round.
+
 `tests/run_ui.lua` loads the *actual bundled script* against
 `tests/nspire_stub.lua`, a mock of the calculator's runtime that is
 deliberately stricter than the real one: it rejects colours outside 0–255,
@@ -572,7 +712,11 @@ test instead. Each game adds its own frame assertions in `tests/<game>/ui.lua`.
 rasterizes real frames to PNG at the handheld's true 318x212, so you can see a
 layout change without leaving the terminal. The simulated player reads the
 world back out of the paint calls rather than reaching into the game's
-internals, so no test-only hooks leak into the shipped script.
+internals, so no test-only hooks leak into the shipped script. Klondike goes
+furthest with this: `tests/klondike/frame.lua` identifies each card on screen
+by matching the ink it drew against the art in the bundle, clipped to the strip
+that card is actually showing, and says so when a strip is too thin to tell two
+cards apart — which is the honest answer rather than a limitation.
 
 **An emulator** — [Firebird](https://github.com/nspire-emus/firebird) runs
 CX II images and opens `.tns` files directly, with a Lua console for live
@@ -580,6 +724,16 @@ poking. This is the last check before real hardware. It needs a boot image and
 OS dumped from a calculator you own.
 
 ## Credits
+
+The playing cards are
+[Kin Pixel Playing Cards](https://the-wild-kin.itch.io/kin-pixel-playing-cards)
+by **KIN**, a free ("name your own price") pack whose description says *"Feel
+free to use these assets in anyway you please, although I'd appreciate paying
+the suggested price if used commercially."* That wording could not be read from
+the source here — itch.io is blocked by this container's egress proxy — so
+`assets/klondike/README.md` records where it came from and says so plainly
+rather than implying it was verified. The PNGs are kept exactly as published;
+`tools/cardart.py` turns them into spans a calculator can draw.
 
 The chess pieces are [Pixel Chess](https://brosen.itch.io/pixel-chess) by
 **brosen**, used under the pack's own terms. The source PNGs are kept in

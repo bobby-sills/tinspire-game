@@ -143,8 +143,12 @@ require string is always `"game"` regardless of the local's name.
   a card as one integer `(suit - 1) * 13 + rank` and unpacks it with division
   and modulo, for the same reason.
 - **Anything that animates a *settled* board is a new running cost, so gate
-  it.** `fruits` throbs a ring on its power fruit, which means repainting a
-  board that is otherwise doing nothing. It repaints only when the throb
+  it.** `fruits` throbs its power fruit -- the sprite itself swells and
+  shrinks, behind a white outline of its own silhouette -- which means
+  repainting a board that is otherwise doing nothing. Note what scaling costs:
+  `gc:drawImage` cannot scale, so anything that changes size drops off the
+  one-call image path onto the rects, which is a second reason to keep that
+  encoding around. It repaints only when the throb
   changes step -- once every three ticks, not every tick -- and only while a
   power fruit is actually on the board, so the common case stays at zero
   repaints. And watch what it does to the tests: `tests/fruits/frame.lua` used

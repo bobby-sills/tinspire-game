@@ -191,21 +191,22 @@ def read_ti_image(bs):
 
 # ------------------------------------------------------------ fillRect -----
 
-def rectangles(mask):
+def rectangles(mask, n=None):
     """Cover a boolean mask with rects: grow each horizontal run downward."""
+    n = n or SIZE
     m = [row[:] for row in mask]
     out = []
-    for y in range(SIZE):
+    for y in range(n):
         x = 0
-        while x < SIZE:
+        while x < n:
             if not m[y][x]:
                 x += 1
                 continue
             x2 = x
-            while x2 < SIZE and m[y][x2]:
+            while x2 < n and m[y][x2]:
                 x2 += 1
             h = 1
-            while y + h < SIZE and all(m[y + h][i] for i in range(x, x2)):
+            while y + h < n and all(m[y + h][i] for i in range(x, x2)):
                 h += 1
             for dy in range(h):
                 for i in range(x, x2):
@@ -213,6 +214,29 @@ def rectangles(mask):
             out.append((x, y, x2 - x, h))
             x = x2
     return out
+
+
+def halo(grid):
+    """The one-pixel silhouette around the sprite: every transparent cell that
+    touches an opaque one, edgewise.
+
+    Drawn behind a power fruit as a white outline of its own shape. It lives in
+    an 18x18 frame -- sprite coordinates -1..16 -- because the outline of a
+    sprite that reaches the edge of its box falls outside that box. Stored
+    shifted by +1 so nothing is negative and the packing stays printable; the
+    drawing code shifts it back.
+    """
+    def opaque(x, y):
+        return 0 <= x < SIZE and 0 <= y < SIZE and grid[y][x] is not None
+
+    mask = [[False] * (SIZE + 2) for _ in range(SIZE + 2)]
+    for y in range(-1, SIZE + 1):
+        for x in range(-1, SIZE + 1):
+            if opaque(x, y):
+                continue
+            if any(opaque(x + dx, y + dy) for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+                mask[y + 1][x + 1] = True
+    return rectangles(mask, SIZE + 2), mask
 
 
 def pack(rects):
@@ -298,7 +322,17 @@ def encode(sheet, name, col, row):
             if c:
                 worst = max(worst, max(abs(c[t] - d[t]) for t in range(3)))
 
-    for ch in pack([r for rs in runs for r in rs]):
+    # The silhouette, rebuilt from what gets written out, same as the rest.
+    halo_rects, halo_mask = halo(grid)
+    back_halo = [[False] * (SIZE + 2) for _ in range(SIZE + 2)]
+    for (x, y, w, h) in unpack(pack(halo_rects)):
+        for dy in range(h):
+            for dx in range(w):
+                back_halo[y + dy][x + dx] = True
+    if back_halo != halo_mask:
+        raise SystemExit("%s: the halo did not rebuild" % name)
+
+    for ch in pack(halo_rects + [r for rs in runs for r in rs]):
         if not (40 <= ord(ch) <= 92):
             raise SystemExit("%s: packed byte %d escapes printable range"
                              % (name, ord(ch)))
@@ -306,7 +340,7 @@ def encode(sheet, name, col, row):
     return {
         "name": name, "grid": grid, "decoded": decoded, "rebuilt": rebuilt,
         "blob": blob, "colours": colours, "runs": runs, "worst": worst,
-        "rects": sum(len(r) for r in runs),
+        "halo": halo_rects, "rects": sum(len(r) for r in runs),
     }
 
 
@@ -318,8 +352,11 @@ def emit(sprites):
         "-- in two encodings of the same pixels:",
         "--   img   a TI.Image string for image.new + gc:drawImage (one call a fruit)",
         "--   runs  the identical pixels as fillRect rects, grouped by colour,",
-        "--         for cells too small for a native sprite and for an OS that",
-        "--         will not take the string form of image.new",
+        "--         for cells too small for a native sprite, for a power fruit,",
+        "--         which throbs and so is never at the native size, and for an",
+        "--         OS that will not take the string form of image.new",
+        "--   halo  the one-pixel silhouette around the sprite, in an 18x18",
+        "--         frame offset by +1, drawn white behind a power fruit",
         "-- tools/fruitart.py rebuilds both from what it wrote and compares them",
         "-- against the source and against each other.",
         "local ART_SIZE = %d" % SIZE,
@@ -329,6 +366,7 @@ def emit(sprites):
         pal = ", ".join("%d, %d, %d" % c for c in s["colours"])
         out.append('  { name = "%s", rects = %d,' % (s["name"], s["rects"]))
         out.append('    img = "%s",' % lua_string(s["blob"]))
+        out.append('    halo = "%s",' % pack(s["halo"]))
         out.append("    pal = { %s }," % pal)
         out.append("    runs = {")
         for rs in s["runs"]:
@@ -370,11 +408,13 @@ def main(argv):
 
     rects = sum(s["rects"] for s in sprites) / len(sprites)
     sys.stderr.write(
-        "fruitart: %d fruits at %dx%d; image path %d bytes a sprite, "
-        "%d draw calls a board; fallback %.1f rects a sprite, %d a board; "
-        "worst channel error from 15-bit colour %d\n"
-        % (len(sprites), SIZE, SIZE, len(sprites[0]["blob"]), 64,
-           rects, int(rects * 64), max(s["worst"] for s in sprites)))
+        "fruitart: %d sprites at %dx%d; image path %d bytes each, 64 draw "
+        "calls a board; rect fallback %.1f rects a sprite, %d a board; halo "
+        "%.1f rects a sprite; worst channel error from 15-bit colour %d\n"
+        % (len(sprites), SIZE, SIZE, len(sprites[0]["blob"]),
+           rects, int(rects * 64),
+           sum(len(s["halo"]) for s in sprites) / len(sprites),
+           max(s["worst"] for s in sprites)))
 
     if "--proof" in argv:
         proof(sprites, argv[argv.index("--proof") + 1])

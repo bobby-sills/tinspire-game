@@ -193,7 +193,7 @@ return function(t)
       end
       if not Frame.step(hs, nil, ordinary) then break end
     end
-    print(string.format("  note  %d sprite beyond the seven, %d power rings seen",
+    print(string.format("  note  %d sprite beyond the seven, %d power fruit seen",
                         nExtra, powers))
     ok(nExtra <= 1, "at most one extra sprite ever appears -- the rainbow")
     ok(powers > 0, "power fruit are marked with a ring")
@@ -211,29 +211,41 @@ return function(t)
     -- assume for the handheld's ARM, about 10ms of a 50ms tick. If that factor
     -- is wrong the cascade just runs slower -- the phase machine counts ticks,
     -- not wall clock -- rather than freezing.
-    local BUDGET = 1400
+    -- 2200 rather than the 1400 this started at, because a power fruit throbs
+    -- and so cannot use the one-call image path: it costs about 73 rects for
+    -- the fruit and 23 for its outline instead of one drawImage. The ceiling
+    -- has to cover a board carrying several at once, and the note below
+    -- reports how many actually turn up so this stays a measurement.
+    local BUDGET = 2200
+    local ordinary = Frame.ordinaryKinds(function() return t.boot(318, 212) end, 3)
     local hs = started(318, 212)
     local worst, worstWhen, sampled = 0, "?", 0
+    local mostPowers = 0
 
-    for move = 1, 15 do
+    for move = 1, 40 do
       local f = Frame.settle(hs)
-      local swaps = Frame.legalSwaps(f)
+      local swaps = Frame.legalSwaps(f, ordinary)
       if #swaps == 0 then break end
       local sw = swaps[1 + (move % #swaps)]
       hs.on.mouseDown(Frame.centre(f, sw[1], sw[2]))
       hs.on.mouseDown(Frame.centre(f, sw[3], sw[4]))
 
       -- Every frame of the cascade this swap starts, not just where it lands.
-      Frame.watch(hs, function(_, _, calls)
+      Frame.watch(hs, function(g, _, calls)
         local total = calls.fillRect + calls.drawRect + calls.drawImage
                     + calls.drawLine + calls.drawString + calls.fillArc
         sampled = sampled + 1
         if total > worst then worst, worstWhen = total, "move " .. move end
+        local n = 0
+        if g.powers then for _ in pairs(g.powers) do n = n + 1 end end
+        if n > mostPowers then mostPowers = n end
       end, 300)
     end
 
-    print(string.format("  note  busiest of %d cascade frames drew %d draw "
-                        .. "calls (%s); budget %d", sampled, worst, worstWhen, BUDGET))
+    print(string.format("  note  busiest of %d frames drew %d draw calls (%s); "
+                        .. "most power fruit at once %d; budget %d",
+                        sampled, worst, worstWhen, mostPowers, BUDGET))
+    ok(mostPowers > 0, "the measurement saw power fruit at all")
     ok(sampled > 100, "sampled a real cascade (" .. sampled .. " frames)")
     ok(worst <= BUDGET, string.format(
       "worst frame drew %d ops (%s), budget %d", worst, worstWhen, BUDGET))
@@ -472,10 +484,12 @@ return function(t)
       Frame.watch(hs, function(g)
         if g.fills > 0 then bursts = bursts + 1 end
         for _, item in ipairs(g.fruit) do
-          if item.colour and not palette[item.colour] then
+          -- Only individual fills: a blit carries the whole sprite's colour
+          -- SET as its label, which is not a palette entry and never was one.
+          if item.colour and not item.blit and not palette[item.colour] then
             offending = offending or item.colour
           end
-          checked = checked + 1
+          if not item.blit then checked = checked + 1 end
         end
       end, 300)
       if offending then
@@ -488,13 +502,13 @@ return function(t)
     ok(checked > 1000, "and checked a lot of fills (" .. checked .. ")")
   end)
 
-  test("a power fruit throbs, and nothing else repaints a still board", function()
+  test("a power fruit throbs, behind an outline of its own shape", function()
     local ordinary = Frame.ordinaryKinds(function() return t.boot(318, 212) end, 3)
     local hs = started(318, 212)
 
-    -- A settled board with no power fruit on it must repaint NOT AT ALL. That
-    -- is the property the throb is most likely to cost, and losing it means a
-    -- handheld redrawing sixty-four sprites forever for nothing.
+    -- A settled board with no power fruit must repaint NOT AT ALL. That is the
+    -- property animating a still board is most likely to cost, and losing it
+    -- means a handheld redrawing sixty-four sprites forever for nothing.
     local f = Frame.settle(hs)
     if not f.powers then
       local before = hs.invalidated
@@ -502,7 +516,6 @@ return function(t)
       eq(hs.invalidated, before, "a still board with no specials asks for no frames")
     end
 
-    -- Now find one, and watch the ring change size.
     local withPower
     for _ = 1, 60 do
       local g = Frame.settle(hs)
@@ -512,22 +525,30 @@ return function(t)
     ok(withPower ~= nil, "a power fruit turned up")
     if not withPower then return end
 
-    -- The ring's size over a couple of cycles, read off the drawn rectangle.
+    ok(#withPower.halos > 0, "it is drawn behind a white outline")
+
+    -- How wide the fruit itself is drawn, over a couple of throb cycles. The
+    -- point of the whole change is that this is the FRUIT changing size, not a
+    -- box around it, so the fruit's own extent is what has to move.
     local cell = next(withPower.powers)
-    local gx = (cell - 1) % 8 + 1
-    local seen, sizes = {}, 0
+    local widths, n = {}, 0
     for _ = 1, 60 do
-      for _, o in ipairs(select(2, hs:paint())) do
-        if o.op == "drawRect" and Frame.POWER_RING[Frame.keyOf(o.color)] then
-          if not seen[o.w] then seen[o.w] = true; sizes = sizes + 1 end
+      local g = Frame.frame(hs)
+      local lo, hi
+      for _, item in ipairs(g.fruit) do
+        if item.cell == cell then
+          local o = item.op
+          lo = math.min(lo or o.x, o.x)
+          hi = math.max(hi or (o.x + o.w), o.x + o.w)
         end
       end
+      if lo and not widths[hi - lo] then widths[hi - lo] = true; n = n + 1 end
       hs.on.timer()
     end
-    ok(sizes >= 3, "the ring is drawn at several different sizes (" .. sizes .. ")")
-    ok(gx >= 1, "and it stayed on the board")
+    print("  note  the power fruit was drawn at " .. n .. " different sizes")
+    ok(n >= 3, "the fruit itself is drawn at several sizes (" .. n .. ")")
 
-    -- And a board that does carry one keeps asking to be repainted.
+    -- And a board carrying one keeps asking to be repainted.
     local before = hs.invalidated
     for _ = 1, 60 do hs.on.timer() end
     ok(hs.invalidated > before, "a board with a power fruit keeps animating")

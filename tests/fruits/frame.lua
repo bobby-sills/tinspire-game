@@ -17,7 +17,20 @@
 
 local M = {}
 
-local function key(c) return c[1] .. "," .. c[2] .. "," .. c[3] end
+-- Colours are keyed at the handheld's own depth -- five bits a channel -- and
+-- not at eight.
+--
+-- That is what lets one fruit be recognised as one fruit however it was drawn.
+-- A sprite blitted with gc:drawImage has been through TI.Image and comes back
+-- 15-bit; the same sprite drawn as fillRects carries the original 8-bit
+-- palette. At eight bits those are different colours and the same fruit reads
+-- as two, which matters now that a power fruit throbs and therefore spends
+-- most of its life on the rect path while its plain twins are still blits.
+-- tools/fruitart.py already guarantees the two encodings agree once reduced,
+-- so reducing here is exactly the right place to meet them.
+local function key(c)
+  return math.floor(c[1] / 8) .. "," .. math.floor(c[2] / 8) .. "," .. math.floor(c[3] / 8)
+end
 M.keyOf = key
 
 M.BOARD  = key({  34,  39,  52 })
@@ -27,17 +40,10 @@ M.PANEL  = key({  22,  26,  34 })
 M.HUD    = key({  26,  30,  40 })
 M.PAGE   = key({  14,  16,  22 })
 M.CURSOR = key({ 250, 238, 120 })
--- The power ring throbs, and it DIMS as it grows -- so it arrives in three
--- colours, not one, and all three have to be recognised here. Keying off only
--- the brightest made a power fruit invisible to this reader on two steps of
--- every six, which is the sort of contract-with-main.lua slip that makes a
--- test flaky rather than failing.
-M.POWER      = key({ 252, 252, 240 })
-M.POWER_MID  = key({ 206, 210, 225 })
-M.POWER_DIM  = key({ 150, 158, 180 })
-
-local POWER_RING = { [M.POWER] = true, [M.POWER_MID] = true, [M.POWER_DIM] = true }
-M.POWER_RING = POWER_RING
+-- The white silhouette drawn behind a power fruit. The one thing besides fruit
+-- that is ever filled inside a cell, so it is chrome here -- and it is also
+-- how this reader knows which cells hold a power fruit.
+M.HALO = key({ 252, 252, 240 })
 M.SELECT = key({ 120, 224, 255 })
 M.HINT   = key({ 120, 250, 160 })
 
@@ -46,6 +52,27 @@ local CHROME = {
   [M.BOARD] = true, [M.CELL_A] = true, [M.CELL_B] = true,
   [M.PANEL] = true, [M.HUD] = true, [M.PAGE] = true,
 }
+
+-- A blitted sprite's colours, the same set the rect encoding of it would fill.
+-- Cached per image, because a board is sixty-four blits a frame and this walks
+-- 256 pixels.
+local imageSig = {}
+
+local function signatureOfImage(img)
+  local cached = imageSig[img.id]
+  if cached then return cached end
+  local set = {}
+  for i = 1, img.w * img.h do
+    local c = img.px[i]
+    if c then set[key(c)] = true end
+  end
+  local list = {}
+  for k in pairs(set) do list[#list + 1] = k end
+  table.sort(list)
+  cached = table.concat(list, " ")
+  imageSig[img.id] = cached
+  return cached
+end
 
 local function sortedKeys(set)
   local out = {}
@@ -63,7 +90,7 @@ end
 --   text               every string drawn, in order
 function M.read(ops)
   local f = { cells = {}, grid = {}, text = {}, strings = {},
-              fruit = {}, panel = false, images = false,
+              fruit = {}, halos = {}, panel = false, images = false,
               fills = 0, blits = 0 }
 
   local outlines = {}
@@ -77,12 +104,15 @@ function M.read(ops)
         f.board = f.board or o
       elseif k == M.PANEL then
         f.panel = true
+      elseif k == M.HALO then
+        f.halos[#f.halos + 1] = o
       elseif not CHROME[k] then
         f.fruit[#f.fruit + 1] = { op = o, colour = k }
       end
     elseif o.op == "drawImage" then
       f.images = true
-      f.fruit[#f.fruit + 1] = { op = o, id = o.img.id }
+      f.fruit[#f.fruit + 1] = { op = o, id = o.img.id,
+                                colour = signatureOfImage(o.img), blit = true }
     elseif o.op == "drawRect" then
       outlines[#outlines + 1] = { op = o, colour = k }
     elseif o.op == "drawString" then
@@ -111,6 +141,7 @@ function M.read(ops)
 
   f.settled = true
   local sig = {}       -- per cell, the set of fill colours found in it
+  local blitSig = {}   -- per cell, the colour set of a sprite blitted into it
 
   -- Only what is drawn over the BOARD counts as fruit. The side panel fills
   -- rectangles too -- the level bar does -- and without this the reader would
@@ -141,10 +172,13 @@ function M.read(ops)
          or o.y + o.h > f.rowY[gy] + f.cell then
         f.settled = false
       end
-      if item.id then
+      -- One rule for both paths: a cell's fruit is the SET OF COLOURS in it.
+      -- A blit contributes the whole sprite's set at once; rects contribute
+      -- one colour each and are unioned. Since the two encodings are the same
+      -- pixels, the same fruit gets the same label either way.
+      if item.blit then
         f.blits = f.blits + 1
-        if f.grid[i] and f.grid[i] ~= item.id then f.settled = false end
-        f.grid[i] = item.id
+        blitSig[i] = item.colour
       else
         f.fills = f.fills + 1
         sig[i] = sig[i] or {}
@@ -153,10 +187,19 @@ function M.read(ops)
     end
   end
 
-  -- The rect path: a cell's fruit is the set of colours drawn in it.
-  if not f.images then
-    for i, set in pairs(sig) do
-      f.grid[i] = table.concat(sortedKeys(set), " ")
+  for i, s in pairs(blitSig) do f.grid[i] = s end
+  for i, set in pairs(sig) do
+    -- A blit and loose fills in the same cell means a sprite drawn over
+    -- something; the blit is the fruit.
+    if not f.grid[i] then f.grid[i] = table.concat(sortedKeys(set), " ") end
+  end
+
+  -- Which cells hold a power fruit, from the white silhouette behind it.
+  for _, o in ipairs(f.halos) do
+    local gx, gy = cellOf(o.x + o.w / 2, o.y + o.h / 2)
+    if gx then
+      f.powers = f.powers or {}
+      f.powers[(gy - 1) * f.cols + gx] = true
     end
   end
 
@@ -169,11 +212,18 @@ function M.read(ops)
 
   -- A fruit shrinking as it bursts is too small for a native sprite, so it
   -- arrives as rects while everything settled around it is still one blit.
-  -- Loose fills on a frame that is otherwise using images therefore mean a
-  -- clear is on screen. (On the rect-only fallback there is nothing to
-  -- contrast against, so this cannot tell -- which costs nothing, because
-  -- M.settle waits on repaint requests rather than on this flag.)
-  if f.images and f.fills > 0 then f.settled = false end
+  -- Loose fills on a frame otherwise using images therefore mean a clear is on
+  -- screen -- EXCEPT in a power fruit's cell, which is drawn as rects
+  -- perpetually because it throbs, and is not going anywhere.
+  if f.images then
+    local loose = 0
+    for _, item in ipairs(f.fruit) do
+      if not item.blit and not (f.powers and item.cell and f.powers[item.cell]) then
+        loose = loose + 1
+      end
+    end
+    if loose > 0 then f.settled = false end
+  end
 
   -- The cursor is ONE ring whose colour says whether a fruit is picked up, so
   -- a selection is also a cursor position.
@@ -181,11 +231,7 @@ function M.read(ops)
     local gx, gy = cellOf(o.op.x + 1, o.op.y + 1)
     if gx then
       local at = { x = gx, y = gy }
-      if POWER_RING[o.colour] then
-        f.powers = f.powers or {}
-        f.powers[(gy - 1) * f.cols + gx] = true
-        f.ringW = o.op.w
-      elseif o.colour == M.CURSOR then f.cursor = at
+      if o.colour == M.CURSOR then f.cursor = at
       elseif o.colour == M.SELECT then f.sel, f.cursor = at, at
       elseif o.colour == M.HINT then
         f.hint = f.hint or {}

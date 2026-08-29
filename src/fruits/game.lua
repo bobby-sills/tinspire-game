@@ -242,6 +242,18 @@ function Fruit:isFull()
   return true
 end
 
+-- How many specials are on the board. The host uses it to decide whether
+-- anything needs animating at all: with no power fruit there is nothing to
+-- throb, and a settled board can then go back to repainting never.
+function Fruit:countSpecials()
+  local powers, rainbows = 0, 0
+  for i = 1, CELLS do
+    if self.special[i] then powers = powers + 1 end
+    if self.cells[i] == RAINBOW then rainbows = rainbows + 1 end
+  end
+  return powers, rainbows
+end
+
 function Fruit:isRainbow(x, y)
   if not Fruit.inside(x, y) then return false end
   return self.cells[(y - 1) * COLS + x] == RAINBOW

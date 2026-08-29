@@ -142,6 +142,15 @@ require string is always `"game"` regardless of the local's name.
   builds a string key and counts it in a table. `src/klondike/game.lua` encodes
   a card as one integer `(suit - 1) * 13 + rank` and unpacks it with division
   and modulo, for the same reason.
+- **Anything that animates a *settled* board is a new running cost, so gate
+  it.** `fruits` throbs a ring on its power fruit, which means repainting a
+  board that is otherwise doing nothing. It repaints only when the throb
+  changes step -- once every three ticks, not every tick -- and only while a
+  power fruit is actually on the board, so the common case stays at zero
+  repaints. And watch what it does to the tests: `tests/fruits/frame.lua` used
+  to decide the board had settled by waiting for the repaint requests to stop,
+  which a board that throbs forever never does. Settling is now judged from
+  whether the *fruit* have stopped moving, which is what it always meant.
 - **Repaint is all-or-nothing.** `platform.window:invalidate()` redraws
   everything; only call it when something changed. A turn-based game can skip
   the timer entirely and repaint on input.

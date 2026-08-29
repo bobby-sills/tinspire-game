@@ -82,19 +82,18 @@ return function(t)
       Frame.settle(hs)
       -- Mid-cascade too, where fruit fall in from above the board and are
       -- deliberately allowed to overflow upward behind the HUD.
-      for _ = 1, 30 do
-        local _, ops = hs:paint()
+      local bad = nil
+      Frame.watch(hs, function(_, ops)
         for _, o in ipairs(ops) do
           if o.op == "fillRect" or o.op == "drawRect" then
             if o.x + o.w < -64 or o.x > s[1] + 64 or o.y > s[2] + 64 then
-              t.fail(string.format("%dx%d: a %s is far off-screen at %d,%d",
-                                   s[1], s[2], o.op, o.x, o.y))
-              return
+              bad = bad or string.format("%dx%d: a %s is far off-screen at %d,%d",
+                                         s[1], s[2], o.op, o.x, o.y)
             end
           end
         end
-        Frame.tick(hs)
-      end
+      end, 40)
+      if bad then t.fail(bad) return end
     end
     t.ok(true, "nothing strayed anywhere absurd")
   end)
@@ -225,14 +224,12 @@ return function(t)
       hs.on.mouseDown(Frame.centre(f, sw[3], sw[4]))
 
       -- Every frame of the cascade this swap starts, not just where it lands.
-      for _ = 1, 300 do
-        local _, _, calls = Frame.frame(hs)
+      Frame.watch(hs, function(_, _, calls)
         local total = calls.fillRect + calls.drawRect + calls.drawImage
                     + calls.drawLine + calls.drawString + calls.fillArc
         sampled = sampled + 1
         if total > worst then worst, worstWhen = total, "move " .. move end
-        if not Frame.tick(hs) then break end
-      end
+      end, 300)
     end
 
     print(string.format("  note  busiest of %d cascade frames drew %d draw "
@@ -334,10 +331,9 @@ return function(t)
     -- It must actually go somewhere first: a swap that is refused outright
     -- leaves the player wondering whether the click registered.
     local moved = false
-    for _ = 1, 20 do
-      if Frame.signature(Frame.frame(hs)) ~= before then moved = true end
-      if not Frame.tick(hs) then break end
-    end
+    Frame.watch(hs, function(g)
+      if Frame.signature(g) ~= before then moved = true end
+    end, 30)
     ok(moved, "the two fruit visibly traded places")
     eq(Frame.signature(Frame.settle(hs)), before, "and then went back")
   end)
@@ -472,22 +468,69 @@ return function(t)
       local sw = swaps[1 + (move % #swaps)]
       hs.on.mouseDown(Frame.centre(f, sw[1], sw[2]))
       hs.on.mouseDown(Frame.centre(f, sw[3], sw[4]))
-      for _ = 1, 300 do
-        local g = Frame.frame(hs)
+      local offending = nil
+      Frame.watch(hs, function(g)
         if g.fills > 0 then bursts = bursts + 1 end
         for _, item in ipairs(g.fruit) do
           if item.colour and not palette[item.colour] then
-            t.fail("move " .. move .. ": a cell was filled with "
-                   .. item.colour .. ", which is not in the art's palette")
-            return
+            offending = offending or item.colour
           end
           checked = checked + 1
         end
-        if not Frame.tick(hs) then break end
+      end, 300)
+      if offending then
+        t.fail("move " .. move .. ": a cell was filled with " .. offending
+               .. ", which is not in the art's palette")
+        return
       end
     end
     ok(bursts > 0, "saw fruit actually bursting (" .. bursts .. " frames)")
     ok(checked > 1000, "and checked a lot of fills (" .. checked .. ")")
+  end)
+
+  test("a power fruit throbs, and nothing else repaints a still board", function()
+    local ordinary = Frame.ordinaryKinds(function() return t.boot(318, 212) end, 3)
+    local hs = started(318, 212)
+
+    -- A settled board with no power fruit on it must repaint NOT AT ALL. That
+    -- is the property the throb is most likely to cost, and losing it means a
+    -- handheld redrawing sixty-four sprites forever for nothing.
+    local f = Frame.settle(hs)
+    if not f.powers then
+      local before = hs.invalidated
+      for _ = 1, 60 do hs.on.timer() end
+      eq(hs.invalidated, before, "a still board with no specials asks for no frames")
+    end
+
+    -- Now find one, and watch the ring change size.
+    local withPower
+    for _ = 1, 60 do
+      local g = Frame.settle(hs)
+      if g.powers and next(g.powers) then withPower = g break end
+      if not Frame.step(hs, nil, ordinary) then break end
+    end
+    ok(withPower ~= nil, "a power fruit turned up")
+    if not withPower then return end
+
+    -- The ring's size over a couple of cycles, read off the drawn rectangle.
+    local cell = next(withPower.powers)
+    local gx = (cell - 1) % 8 + 1
+    local seen, sizes = {}, 0
+    for _ = 1, 60 do
+      for _, o in ipairs(select(2, hs:paint())) do
+        if o.op == "drawRect" and Frame.POWER_RING[Frame.keyOf(o.color)] then
+          if not seen[o.w] then seen[o.w] = true; sizes = sizes + 1 end
+        end
+      end
+      hs.on.timer()
+    end
+    ok(sizes >= 3, "the ring is drawn at several different sizes (" .. sizes .. ")")
+    ok(gx >= 1, "and it stayed on the board")
+
+    -- And a board that does carry one keeps asking to be repainted.
+    local before = hs.invalidated
+    for _ = 1, 60 do hs.on.timer() end
+    ok(hs.invalidated > before, "a board with a power fruit keeps animating")
   end)
 
   test("the hint marks a swap that really is legal", function()

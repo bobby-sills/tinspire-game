@@ -760,10 +760,10 @@ matches, and the mid-cascade refill sometimes does.
 Following Bejeweled 2, which is where most people's expectations of a
 match-three come from:
 
-- **four in a line, or an L / T / +**, merges into a **power fruit** — drawn
-  with a white ring. It keeps its colour and matches like anything else, but
-  when it clears it takes the eight cells around it, and a blast that catches
-  another power fruit sets that one off too, so they chain.
+- **four in a line, or an L / T / +**, merges into a **power fruit**. It keeps
+  its colour and matches like anything else, but when it clears it takes the
+  eight cells around it, and a blast that catches another power fruit sets that
+  one off too, so they chain.
 - **five or more in a line** merges into a **rainbow**, drawn as a cut
   dragonfruit because pale is the one thing none of the seven playable fruits
   is. It has no colour and can never be matched. Swap it with a neighbour and
@@ -795,6 +795,27 @@ deliberate split rather than two flags: the rainbow is a *kind* precisely so
 that it equals no ordinary fruit, and every run scanner here compares cells for
 equality, so a rainbow can never join a run without anyone writing a special
 case for it.
+
+A power fruit is marked by a ring that throbs — stepping from tight around the
+fruit out to the edge of the cell and back, **dimming as it grows**. The fading
+is what makes it read as a glow swelling outward rather than as a white box
+being resized; at a constant brightness the largest step is just a loud
+rectangle, and it competes with the cursor ring, which lives at the cell edge
+too. A ring rather than a tint because `gc:drawImage` cannot recolour a sprite,
+and an outline rather than a fill because nothing but fruit is ever filled
+inside a cell.
+
+Animating a *settled* board is the one thing here that costs something a still
+board did not pay before, so it is gated twice: the throb repaints only when it
+actually changes step — once every three ticks, not every tick — and only while
+there is a power fruit on the board to throb. With none, a settled board still
+repaints exactly never.
+
+That broke the test harness in an interesting way. `tests/fruits/frame.lua` used
+to decide the board had settled by watching the repaint requests dry up, which
+a board that throbs forever never does. It now watches the *fruit* instead —
+two consecutive frames where nothing has moved — which is the more honest
+question anyway, since that is what "settled" was always supposed to mean.
 
 Gravity had to learn about them too — a power fruit that falls has to arrive
 still being one, or it hands its blast to whatever landed underneath — and the

@@ -18,6 +18,7 @@
 local M = {}
 
 local function key(c) return c[1] .. "," .. c[2] .. "," .. c[3] end
+M.keyOf = key
 
 M.BOARD  = key({  34,  39,  52 })
 M.CELL_A = key({  46,  52,  68 })
@@ -26,7 +27,17 @@ M.PANEL  = key({  22,  26,  34 })
 M.HUD    = key({  26,  30,  40 })
 M.PAGE   = key({  14,  16,  22 })
 M.CURSOR = key({ 250, 238, 120 })
-M.POWER  = key({ 252, 252, 240 })
+-- The power ring throbs, and it DIMS as it grows -- so it arrives in three
+-- colours, not one, and all three have to be recognised here. Keying off only
+-- the brightest made a power fruit invisible to this reader on two steps of
+-- every six, which is the sort of contract-with-main.lua slip that makes a
+-- test flaky rather than failing.
+M.POWER      = key({ 252, 252, 240 })
+M.POWER_MID  = key({ 206, 210, 225 })
+M.POWER_DIM  = key({ 150, 158, 180 })
+
+local POWER_RING = { [M.POWER] = true, [M.POWER_MID] = true, [M.POWER_DIM] = true }
+M.POWER_RING = POWER_RING
 M.SELECT = key({ 120, 224, 255 })
 M.HINT   = key({ 120, 250, 160 })
 
@@ -170,9 +181,10 @@ function M.read(ops)
     local gx, gy = cellOf(o.op.x + 1, o.op.y + 1)
     if gx then
       local at = { x = gx, y = gy }
-      if o.colour == M.POWER then
+      if POWER_RING[o.colour] then
         f.powers = f.powers or {}
         f.powers[(gy - 1) * f.cols + gx] = true
+        f.ringW = o.op.w
       elseif o.colour == M.CURSOR then f.cursor = at
       elseif o.colour == M.SELECT then f.sel, f.cursor = at, at
       elseif o.colour == M.HINT then
@@ -192,30 +204,47 @@ function M.frame(hs)
   return f, ops, calls
 end
 
--- Runs the timer until nothing is moving.
+-- What has to stop changing before the board counts as settled: where every
+-- fruit is, and whether any of them is caught between cells or mid-burst.
 --
--- "Moving" is read from the repaint requests, not from the picture: the game
--- calls platform.window:invalidate() on a tick exactly when it has something
--- to animate, so a tick that asks for no repaint is a tick where the machine
--- was idle. Judging it from the frame instead does not work, and the way it
--- fails is worth writing down -- at the very start of a swap the two fruit are
--- drawn at each other's cells, so all sixty-four cells hold exactly one fruit
--- and the board looks perfectly settled while a swap is in fact under way.
-function M.settle(hs, limit)
+-- Deliberately NOT the repaint requests, which is what this used to watch. The
+-- game repaints while a power fruit throbs, which never stops, so a settled
+-- board asks for frames forever and "it stopped asking" stopped meaning
+-- anything. Watching the fruit instead is also the more honest question, since
+-- that is what "settled" was always supposed to mean.
+local function stability(f)
+  return M.signature(f) .. "|" .. tostring(f.settled) .. "|" .. tostring(f.filled)
+end
+
+-- Runs the timer until the board stops changing, calling `fn(frame, ops,
+-- calls)` for every frame along the way if one is given.
+--
+-- Two consecutive settled frames that look identical, rather than one. One is
+-- not enough and the reason is worth writing down: at the very start of a swap
+-- the two fruit are drawn at each other's cells, so all sixty-four hold
+-- exactly one fruit and the board looks perfectly settled while a swap is in
+-- fact under way. The next tick moves them off their cells and gives the game
+-- away.
+function M.watch(hs, fn, limit)
+  local last, stable = nil, 0
   for _ = 1, limit or 800 do
-    local before = hs.invalidated
+    local f, ops, calls = M.frame(hs)
+    if fn then fn(f, ops, calls) end
+    local key = stability(f)
+    if f.settled and key == last then
+      stable = stable + 1
+      if stable >= 2 then return f end
+    else
+      stable = 0
+    end
+    last = key
     hs.on.timer()
-    if hs.invalidated == before then break end
   end
   return M.frame(hs)
 end
 
--- Ticks once and says whether the game asked to be repainted, i.e. whether
--- anything is still in flight.
-function M.tick(hs)
-  local before = hs.invalidated
-  hs.on.timer()
-  return hs.invalidated ~= before
+function M.settle(hs, limit)
+  return M.watch(hs, nil, limit)
 end
 
 function M.signature(f)
@@ -334,16 +363,14 @@ function M.step(hs, pick, ordinary)
   hs.on.mouseDown(M.centre(f, s[3], s[4]))
 
   local busiest, busyOps = -1, nil
-  for _ = 1, 800 do
-    local g, ops = M.frame(hs)
+  local after = M.watch(hs, function(g, ops)
     -- "Busiest" means the most cells actually empty, which finds the frame
     -- with the most fruit in the air rather than one caught between ticks.
     local empty = (g.cols or 8) * (g.rows or 8) - (g.filled or 0)
     if empty > busiest then busiest, busyOps = empty, ops end
-    if not M.tick(hs) then break end
-  end
+  end)
 
-  return M.settle(hs), s, busyOps
+  return after, s, busyOps
 end
 
 return M

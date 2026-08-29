@@ -250,6 +250,18 @@ function Fruit:isFull()
   return true
 end
 
+-- How many specials are on the board. The host uses it to decide whether
+-- anything needs animating at all: with no power fruit there is nothing to
+-- throb, and a settled board can then go back to repainting never.
+function Fruit:countSpecials()
+  local powers, rainbows = 0, 0
+  for i = 1, CELLS do
+    if self.special[i] then powers = powers + 1 end
+    if self.cells[i] == RAINBOW then rainbows = rainbows + 1 end
+  end
+  return powers, rainbows
+end
+
 function Fruit:isRainbow(x, y)
   if not Fruit.inside(x, y) then return false end
   return self.cells[(y - 1) * COLS + x] == RAINBOW
@@ -1286,7 +1298,20 @@ local HINT     = { 120, 250, 160 }
 -- 255,236,120 against the cursor's 250,238,120: the frame reader could tell
 -- them apart to the byte and a player could not tell them apart at all, so a
 -- board with power fruit on it had four things that looked like the cursor.
-local POWER    = { 252, 252, 240 }
+local POWER      = { 252, 252, 240 }
+local POWER_MID  = { 206, 210, 225 }
+local POWER_DIM  = { 150, 158, 180 }
+
+-- The throb: one ring, stepping outward from tight around the fruit to the
+-- edge of the cell and back, DIMMING as it grows. Fading is what makes it read
+-- as a glow swelling outward rather than as a white box being resized -- at a
+-- constant brightness the largest step is just a loud rectangle, and it also
+-- competes with the cursor ring, which lives at inset 0.
+local THROB = {
+  { 3, POWER }, { 2, POWER }, { 1, POWER_MID },
+  { 0, POWER_DIM }, { 1, POWER_MID }, { 2, POWER },
+}
+local THROB_TICKS = 3     -- host ticks per step, so a cycle is a little under a second
 -- The level bar's own two colours. Deliberately not shared with anything else
 -- on screen: the frame reader separates chrome from art by colour, and a value
 -- doing two jobs is how that stops working.
@@ -1316,6 +1341,10 @@ local entropy = 1
 -- lights a move for them -- free, unlike the hint they ask for with H.
 local idle = 0
 local IDLE_NUDGE = 100     -- ticks, so about five seconds at BASE_TICK
+
+-- Where the power-fruit throb is in its cycle, and how long this step has run.
+local throbStep = 1
+local throbHeld = 0
 
 local function stir(v)
   entropy = Fruit.mix(entropy, v)
@@ -1501,6 +1530,16 @@ end
 newRound()
 timer.start(BASE_TICK)
 
+-- Advances the throb, and says whether it moved to a new step -- which is the
+-- only moment it is worth repainting for.
+local function stepThrob()
+  throbHeld = throbHeld + 1
+  if throbHeld < THROB_TICKS then return false end
+  throbHeld = 0
+  throbStep = throbStep % #THROB + 1
+  return true
+end
+
 function on.timer()
   -- Deliberately not stir(): a timer tick is not the player doing something,
   -- and resetting the idle count here would mean the nudge never fires.
@@ -1508,12 +1547,22 @@ function on.timer()
 
   if board:busy() then
     board:tick()
+    stepThrob()                    -- keep the cycle running; we repaint anyway
     platform.window:invalidate()   -- something is moving; keep the frames coming
     idle = 0
     return
   end
 
-  if board.state == "playing" and not board.hint then
+  if board.state ~= "playing" then return end
+
+  -- A settled board repaints for exactly two reasons, and both are gated so
+  -- that most of the time it still repaints not at all: the throb, and only
+  -- while there is a power fruit to throb; and the nudge, once.
+  if stepThrob() and select(1, board:countSpecials()) > 0 then
+    platform.window:invalidate()
+  end
+
+  if not board.hint then
     idle = idle + 1
     if idle >= IDLE_NUDGE and board:showHint(true) then
       platform.window:invalidate()
@@ -1690,13 +1739,18 @@ local function drawCells(gc)
   end
 end
 
--- The mark on a power fruit: a ring just inside the cell, drawn twice so it
--- reads at sixteen pixels without a fill.
+-- The mark on a power fruit: one ring at whatever size the throb is currently
+-- at. Two draw calls a fruit, which is what lets this be on every power fruit
+-- on the board without the frame cost mattering.
 local function powerRing(gc, x, y)
-  col(gc, POWER)
-  local px, py = cellX(x), cellY(y)
-  gc:drawRect(px + 1, py + 1, ui.cell - 3, ui.cell - 3)
-  gc:drawRect(px + 2, py + 2, ui.cell - 5, ui.cell - 5)
+  local step = THROB[throbStep]
+  local inset, c = step[1], step[2]
+  -- On a small cell the largest ring would swallow the fruit, so the throb
+  -- collapses to a single tight ring rather than doing something silly.
+  if ui.cell < 14 then inset = 1 end
+  col(gc, c)
+  gc:drawRect(cellX(x) + inset, cellY(y) + inset,
+              ui.cell - 1 - inset * 2, ui.cell - 1 - inset * 2)
 end
 
 -- The fruit that are sitting still. During `clear` the matched ones are still

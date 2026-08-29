@@ -153,7 +153,11 @@ local PANEL_BG  = {  12,  36,  24 }
 local ACCENT    = { 246, 200,  80 }
 local SEL_COL   = { 250, 214,  90 }   -- the run you are holding
 local DEST_COL  = { 120, 230, 150 }   -- somewhere it can legally go
-local CURSOR_COL= { 255, 255, 255 }
+-- The cursor sits on top of the cards themselves, which are a pale cream, so
+-- it has to be dark and saturated rather than bright: white was very nearly
+-- invisible against a card face. Blue also keeps it apart from the gold of a
+-- held run and the green of a legal destination.
+local CURSOR_COL= {  40, 130, 245 }
 local RED_INK   = { 240, 120, 120 }
 
 -- Largest first: fitFont walks down until the label measures small enough.
@@ -972,7 +976,7 @@ function on.paint(gc)
 
   if state == "playing" then
     local rx, ry, rw, rh = pileRect(cur)
-    if rh > 0 then outline(gc, rx, ry, rw, rh, CURSOR_COL, 1) end
+    if rh > 0 then outline(gc, rx, ry, rw, rh, CURSOR_COL) end
     if held then
       local hx, hy, hw, hh = pileRect(held)
       if hh > 0 then outline(gc, hx, hy, hw, hh, SEL_COL) end

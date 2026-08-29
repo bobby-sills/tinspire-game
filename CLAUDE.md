@@ -18,7 +18,8 @@ and a layout that has to adapt at paint time to how much it is asked to show),
 `slide` (a generator that has to make illegal states unrepresentable, plus
 an independent oracle for the tests to check it against) and `fruits`
 (match-three: the same unrepresentable-illegal-state trick, a cascade sliced
-across ticks, and the only game here that draws with `gc:drawImage`). Between
+across ticks, special pieces that change what a legal move *is*, and the only
+game here that draws with `gc:drawImage`). Between
 them they cover the shapes a new game is likely to take — read whichever is closest to
 what you're building.
 
@@ -225,6 +226,19 @@ require string is always `"game"` regardless of the local's name.
   wearing different clothes. The other six games still seed with
   `math.randomseed(os.time() + ...)` and so deal the same opening every launch
   on hardware.
+- **Owning the generator is only half of it -- deal at the right moment too.**
+  `fruits` owned its RNG from the start and still dealt the same board every
+  launch, because the board behind the title screen is dealt at *load*, when
+  the only entropy there has ever been is the seed's initial value, and
+  pressing enter started the round without dealing a new one. Deal when play
+  starts, from entropy accumulated while the player sat on the title screen.
+- **A test that identifies things by a handle can pass on handle churn alone.**
+  The test that should have caught the above compared boards by the identity of
+  the sprite in each cell, and the mock numbered images from a counter that ran
+  for the life of the process rather than per document -- so two launches of
+  the same board looked different. `stub.load` now restarts image numbering per
+  document, which is what the calculator does. If a test tells two things apart
+  by an identifier, check the identifier is a property of the thing.
 
 ## Testing without a calculator
 

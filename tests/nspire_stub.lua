@@ -224,7 +224,10 @@ function imageModule.new(data)
   return img
 end
 
+function imageModule.__reset() nextImageId = 0 end
+
 stub.image = imageModule
+stub.resetImageIds = imageModule.__reset
 
 -- Saved before stub.load replaces math.randomseed below. Without it the
 -- replacement would stop the *next* load from reseeding, so only the first
@@ -265,6 +268,11 @@ function stub.load(path, w, h, seed)
   _G.on = {}
   _G.var = { store = function() end, recall = function() return nil end }
   _G.image = imageModule
+
+  -- Image handles are numbered from 1 for each document loaded, not for the
+  -- life of the process. A test that boots twice and compares what the two
+  -- drew needs the same sprite to carry the same id both times.
+  stub.resetImageIds()
 
   local chunk = assert(loadfile(path))
   chunk()

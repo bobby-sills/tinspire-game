@@ -701,8 +701,18 @@ the ones above fall in, and whatever lands may line up again.
 | Click | Pick up; click a neighbour to swap with it |
 
 A clear is worth 10 a fruit, plus 20 for each one past the third, times a
-multiplier that grows down the cascade: x1, x2, x3, x5, x8, x12. The round ends
-when no swap anywhere on the board would make a run.
+multiplier that grows down the cascade: x1, x2, x3, x5, x8, x12. Clearing fruit
+also fills the level bar, and each level asks for more than the last and pays a
+bonus for reaching it — the level measures how much board you have got through,
+the score measures how well, and points per fruit deliberately do *not* scale
+with the level so a clear has one value rather than two multiplied together.
+
+Sit still for about five seconds and the game lights a legal swap for you,
+free. `H` is the same thing asked for deliberately, and that one costs 20 —
+a player who has stopped moving has usually stopped *seeing*, and charging them
+for a prompt they did not ask for would be a strange thing to do.
+
+The round ends when no swap anywhere on the board would do anything.
 
 The swap-by-arrow is the route that actually gets used, so it is one keypress:
 pick a fruit up with `enter`, then press the direction you want it to go. The
@@ -743,6 +753,54 @@ no-match fill there too and every test above still passes while cascades
 quietly leave the game. So the tests assert both directions: a fresh deal never
 matches, and the mid-cascade refill sometimes does.
 
+### Specials
+
+![Power fruit, with the level bar filling](docs/screenshots/fruits-playing.png)
+
+Following Bejeweled 2, which is where most people's expectations of a
+match-three come from:
+
+- **four in a line, or an L / T / +**, merges into a **power fruit** — drawn
+  with a white ring. It keeps its colour and matches like anything else, but
+  when it clears it takes the eight cells around it, and a blast that catches
+  another power fruit sets that one off too, so they chain.
+- **five or more in a line** merges into a **rainbow**, drawn as a cut
+  dragonfruit because pale is the one thing none of the seven playable fruits
+  is. It has no colour and can never be matched. Swap it with a neighbour and
+  it is *spent*: every fruit of that neighbour's kind leaves the board. Two
+  rainbows swapped together clear everything, which is the only sensible
+  reading of "all of the other one's colour" when the other one has no colour.
+
+The distinction worth stating because it is easy to get backwards: **five cells
+in an L is a power fruit, not a rainbow.** A rainbow needs five in one straight
+run. So the decision is made per run and per cluster of overlapping runs, which
+is why the matcher keeps the runs it found and not only the cells it marked.
+
+Two consequences fall out of the rainbow, and both reach further than the
+drawing code:
+
+**It changes what "no legal swap" means.** A rainbow is spent rather than
+matched, so a swap touching one always does something and is therefore always
+legal — which means a board holding a rainbow essentially never deadlocks. Both
+the production move-finder and the brute-force oracle carry that clause, and so
+does the frame reader, which learns which sprites are ordinary by looking at
+*fresh* boards — they hold no specials by construction, so anything seen later
+and not in that set is one. Without that the reader's idea of "no moves left"
+quietly stops being the game's, and a board carrying a rainbow reads as
+deadlocked while the game plays happily on.
+
+**It changes what a cell can hold.** A cell is now 1..7, or the rainbow; a
+power fruit is a flag alongside, because it keeps its colour. That is a
+deliberate split rather than two flags: the rainbow is a *kind* precisely so
+that it equals no ordinary fruit, and every run scanner here compares cells for
+equality, so a rainbow can never join a run without anyone writing a special
+case for it.
+
+Gravity had to learn about them too — a power fruit that falls has to arrive
+still being one, or it hands its blast to whatever landed underneath — and the
+refill never hands out a special, because a special is something the player
+earned from a match.
+
 ### The cascade is a state machine, not a loop
 
 ![Mid-cascade](docs/screenshots/fruits-cascade.png)
@@ -758,6 +816,12 @@ through, exactly like Connect Four's sliced search.
 An illegal swap is one of its states: `swap → unswap → idle`, so the two fruit
 visibly trade places and come back. Silently refusing leaves the player unsure
 the key even registered.
+
+The clear phase has an order that each step depends on: the cells that *merge*
+into a special come out of the marks first, so a special never destroys itself;
+then power fruit go off, to a fixpoint, because one blast can set off another;
+only then is the total scored, which is what makes a chained blast worth what
+it actually cleared.
 
 The work of a phase happens as it is *left*, so while a phase is on screen the
 board holds exactly what that phase is meant to show — during `clear` the
@@ -852,8 +916,27 @@ reason is worth writing down: at the very start of a swap the two fruit are
 drawn at each other's cells, so all sixty-four cells hold exactly one fruit and
 the board looks perfectly settled while a swap is in fact under way.
 
+### The board that was the same every time
+
 Like Slide, Fruits owns its random number generator instead of seeding
-`math.random`, which does nothing on the handheld.
+`math.random`, which does nothing on the handheld. That was not enough, and the
+way the gap was found is worth recording.
+
+The board behind the title screen is dealt when the document loads — at which
+point the only entropy that exists is the generator's initial seed. Pressing
+`enter` started the round without dealing a new one, so **every launch played
+the identical board**: Wordle's bug in a different coat. The round is now dealt
+at the moment play starts, seeded from how long the player sat on the title
+screen, which on a handheld with no clock worth reading is the only thing that
+differs between two launches.
+
+The test that should have caught it had been passing all along, for the wrong
+reason. It compared boards by the identity of the sprites drawn in each cell,
+and the mock handed out image handles from a counter that ran for the life of
+the process rather than restarting per document — so two launches of the *same*
+board produced different handles and looked different. Fixing the mock to
+number images per document, which is what the calculator does, turned a test
+that could not fail into one that did.
 
 ## Installing
 

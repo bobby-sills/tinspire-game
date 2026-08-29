@@ -976,6 +976,435 @@ test("play continues until the board really is dead", function()
                      .. "longest ran %d moves", ended, longest))
 end)
 
+-- =============================================================== specials ===
+
+local RAINBOW = Fruit.RAINBOW
+
+-- A board in play with a fixture on it, built on the clean base so nothing
+-- planted can collide with a neighbour.
+local function playing()
+  local b = cleanBoard()
+  b.state = "playing"
+  return b
+end
+
+local function countSpecials(b)
+  local powers, rainbows = 0, 0
+  for i = 1, CELLS do
+    if b.special[i] then powers = powers + 1 end
+    if b.cells[i] == RAINBOW then rainbows = rainbows + 1 end
+  end
+  return powers, rainbows
+end
+
+test("four in a line merges into a power fruit", function()
+  -- A pair, a gap, and a single, so the row holds no run yet; the swap brings
+  -- the fourth up into the gap and joins all four. Laying three in a row and
+  -- adding a fourth would not work -- the three already match.
+  local b = playing()
+  b:set(2, 4, PLANT); b:set(3, 4, PLANT); b:set(5, 4, PLANT)
+  b:set(4, 5, PLANT); b:set(4, 4, PLANT + 1)
+  eq(select(2, Fruit.scanRuns(b.cells, COLS, ROWS)), 0,
+     "the fixture matches nothing until the swap")
+
+  ok(b:swap(4, 4, 4, 5), "the swap is accepted")
+  b:advance()
+  eq(select(2, Fruit.scanRuns(b.cells, COLS, ROWS)), 4,
+     "oracle: exactly four cells in the run")
+  eq(#b.spawns, 1, "one special is planned")
+  eq(b.spawns[1].what, Fruit.SPAWN_POWER, "and it is a power fruit")
+  eq(b.spawns[1].at, (4 - 1) * COLS + 4,
+     "placed on the cell the player moved into")
+
+  b:advance()   -- leave "clear": the merge happens here
+  local powers, rainbows = countSpecials(b)
+  eq(powers, 1, "one power fruit is on the board")
+  eq(rainbows, 0, "and no rainbow")
+  ok(b:isFull(), "the board is full")
+end)
+
+test("five in a line merges into a rainbow, not a power fruit", function()
+  -- Two pairs either side of a gap: no run yet, and one fruit into the gap
+  -- makes five.
+  local b = playing()
+  b:set(2, 4, PLANT); b:set(3, 4, PLANT)
+  b:set(5, 4, PLANT); b:set(6, 4, PLANT)
+  b:set(4, 5, PLANT); b:set(4, 4, PLANT + 1)
+  eq(select(2, Fruit.scanRuns(b.cells, COLS, ROWS)), 0, "nothing matches yet")
+
+  b:swap(4, 4, 4, 5)
+  b:advance()
+  eq(select(2, Fruit.scanRuns(b.cells, COLS, ROWS)), 5, "oracle: five in the run")
+  eq(#b.spawns, 1, "one special")
+  eq(b.spawns[1].what, Fruit.SPAWN_RAINBOW, "five in a LINE is a rainbow")
+
+  b:advance()
+  local powers, rainbows = countSpecials(b)
+  eq(rainbows, 1, "a rainbow is on the board")
+  eq(powers, 0, "and it is not also a power fruit")
+end)
+
+test("five cells in an L is a power fruit, not a rainbow", function()
+  -- The distinction that is easy to get wrong: it is five in a straight LINE
+  -- that makes a rainbow, not five cells cleared.
+  local b = playing()
+  b:set(4, 4, PLANT); b:set(5, 4, PLANT); b:set(6, 4, PLANT)
+  b:set(4, 5, PLANT); b:set(4, 6, PLANT)
+  eq(select(2, Fruit.scanRuns(b.cells, COLS, ROWS)), 5,
+     "oracle: the L covers five cells")
+
+  eq(b:findMatches(), 5, "production agrees")
+  local spawns = b:planSpawns(nil, nil)
+  eq(#spawns, 1, "one special from the whole L")
+  eq(spawns[1].what, Fruit.SPAWN_POWER, "an L makes a power fruit")
+  eq(spawns[1].at, (4 - 1) * COLS + 4, "placed on the corner, where the eye is")
+end)
+
+test("a plain three makes nothing", function()
+  local b = playing()
+  b:set(3, 5, PLANT); b:set(4, 5, PLANT); b:set(5, 5, PLANT)
+  b:findMatches()
+  eq(#b:planSpawns(nil, nil), 0, "three in a row is just three in a row")
+end)
+
+test("two separate fours make two specials", function()
+  local b = playing()
+  for x = 1, 4 do b:set(x, 1, PLANT) end
+  for x = 5, 8 do b:set(x, 8, PLANT + 1) end
+  eq(select(2, Fruit.scanRuns(b.cells, COLS, ROWS)), 8, "oracle: eight cells")
+  b:findMatches()
+  local spawns = b:planSpawns(nil, nil)
+  eq(#spawns, 2, "one special per run")
+  for _, sp in ipairs(spawns) do
+    eq(sp.what, Fruit.SPAWN_POWER, "both are power fruit")
+  end
+end)
+
+test("a power fruit takes the eight cells around it", function()
+  local b = playing()
+  -- A power fruit at (4,4), then a plain three through it so it clears.
+  b:set(3, 4, PLANT); b:set(4, 4, PLANT); b:set(5, 4, PLANT)
+  b.special[(4 - 1) * COLS + 4] = true
+
+  eq(b:findMatches(), 3, "the run itself is three cells")
+  b._fired = nil
+  local added = b:detonate()
+  eq(added, 6, "the blast adds the six cells of the 3x3 not already marked")
+  eq(b.matched, 9, "nine cells go in all")
+
+  for dy = -1, 1 do
+    for dx = -1, 1 do
+      local i = (4 + dy - 1) * COLS + (4 + dx)
+      ok(b.marked[i], string.format("cell (%d,%d) is caught in the blast",
+                                    4 + dx, 4 + dy))
+    end
+  end
+end)
+
+test("a blast at the edge does not run off the board", function()
+  local b = playing()
+  b:set(1, 1, PLANT); b:set(2, 1, PLANT); b:set(3, 1, PLANT)
+  b.special[1] = true
+  b:findMatches()
+  b._fired = nil
+  b:detonate()
+  local n = 0
+  for i = 1, CELLS do if b.marked[i] then n = n + 1 end end
+  -- The 3x3 clipped to a corner is 4 cells -- (1,1), (2,1), (1,2), (2,2) --
+  -- and the run adds only (3,1), the other two already being in it.
+  eq(n, 5, "corner blast plus the run, and nothing off the edge")
+  ok(b:isFull(), "and nothing was corrupted")
+end)
+
+test("blasts chain through other power fruit", function()
+  local b = playing()
+  b:set(3, 4, PLANT); b:set(4, 4, PLANT); b:set(5, 4, PLANT)
+  b.special[(4 - 1) * COLS + 4] = true    -- in the run
+  b.special[(5 - 1) * COLS + 5] = true    -- in the first blast, one row down
+  b:findMatches()
+  b._fired = nil
+  b:detonate()
+  -- The second one is at (5,5); its own 3x3 reaches row 6, which the first
+  -- blast never touches. That is the proof the chain actually happened.
+  ok(b.marked[(6 - 1) * COLS + 5], "the second blast reached a row the first could not")
+end)
+
+test("a chain of blasts always terminates", function()
+  -- Every cell a power fruit, which is the worst case for the fixpoint.
+  local b = playing()
+  for i = 1, CELLS do b.special[i] = true end
+  b:set(3, 4, PLANT); b:set(4, 4, PLANT); b:set(5, 4, PLANT)
+  b:findMatches()
+  b._fired = nil
+  b:detonate()
+  eq(b.matched, CELLS, "it swallows the whole board, and stops")
+end)
+
+test("a rainbow is never part of a run", function()
+  local b = playing()
+  b:set(3, 3, RAINBOW); b:set(4, 3, RAINBOW); b:set(5, 3, RAINBOW)
+  eq(select(2, Fruit.scanRuns(b.cells, COLS, ROWS)), 0,
+     "oracle: three rainbows in a row are not a run")
+  eq(b:findMatches(), 0, "and production agrees")
+  ok(not b:matchesAt(4, 3), "nor does the local scan think so")
+end)
+
+test("spending a rainbow clears every fruit of the colour it took", function()
+  local b = playing()
+  b:set(4, 4, RAINBOW)
+  local target = b:get(4, 5)
+  local before = 0
+  for i = 1, CELLS do if b.cells[i] == target then before = before + 1 end end
+  ok(before >= 8, "there is a decent number of the target colour (" .. before .. ")")
+
+  ok(b:swap(4, 4, 4, 5), "swapping a rainbow is accepted")
+  b:advance()                      -- leaves "swap"
+  eq(b.phase, "clear", "it goes straight to clearing, not to unswap")
+  eq(b.matched, before + 1, "every one of that colour, plus the rainbow itself")
+
+  b:resolve()
+  ok(b:isFull(), "the board came back full")
+  eq(b.moves, 1, "and it counted as a move")
+  ok(b.score > 0, "and scored")
+end)
+
+test("two rainbows swapped together clear the whole board", function()
+  local b = playing()
+  b:set(4, 4, RAINBOW); b:set(5, 4, RAINBOW)
+  b:swap(4, 4, 5, 4)
+  b:advance()
+  eq(b.matched, CELLS, "all sixty-four cells")
+  b:resolve()
+  ok(b:isFull(), "and the board refills completely")
+end)
+
+test("a swap touching a rainbow is always legal, to both mechanisms", function()
+  local b = fromRows(DEAD_ROWS)     -- proved dead above
+  eq(#Fruit.allLegalSwaps(b.cells, COLS, ROWS), 0, "dead to start with")
+  ok(not b:hasMove(), "production agrees")
+
+  b:set(4, 4, RAINBOW)
+  ok(b:hasMove(), "one rainbow revives the board")
+  local swaps = Fruit.allLegalSwaps(b.cells, COLS, ROWS)
+  eq(#swaps, 4, "oracle: its four neighbours, and nothing else")
+
+  local x1, y1, x2, y2 = b:findMove()
+  local found = false
+  for _, s in ipairs(swaps) do
+    if s[1] == x1 and s[2] == y1 and s[3] == x2 and s[4] == y2 then found = true end
+  end
+  ok(found, "and the move production names is one of them")
+end)
+
+test("gravity carries a power fruit with its own cell", function()
+  local b = playing()
+  local at = (3 - 1) * COLS + 4
+  b.special[at] = true
+  local kind = b.cells[at]
+  -- Punch the cell below it out; the power fruit must fall into the hole.
+  b.cells[(4 - 1) * COLS + 4] = 0
+  b.special[(4 - 1) * COLS + 4] = false
+  b:collapse(function() return 1 end)
+
+  local landed = (4 - 1) * COLS + 4
+  eq(b.cells[landed], kind, "the fruit fell one row")
+  ok(b.special[landed], "and it is still a power fruit")
+  ok(not b.special[at], "with nothing left behind where it was")
+end)
+
+test("gravity keeps specials attached over a long fuzz", function()
+  local rnd = seededRand(31337)
+  for iter = 1, 300 do
+    local b = randomBoard(rnd)
+    -- Sprinkle specials, remember them by the fruit they sit on.
+    local tagged = {}
+    for _ = 1, 8 do
+      local i = rnd(CELLS)
+      b.special[i] = true
+      tagged[i] = b.cells[i]
+    end
+    local before = 0
+    for i = 1, CELLS do if b.special[i] then before = before + 1 end end
+
+    for _ = 1, 10 do
+      local i = rnd(CELLS)
+      if not b.special[i] then b.cells[i] = 0 end   -- never punch out a special
+    end
+    b:collapse(function(n) return rnd(n) end)
+
+    local after = 0
+    for i = 1, CELLS do
+      if b.special[i] then
+        after = after + 1
+        if b.cells[i] == RAINBOW then
+          fail("iteration " .. iter .. ": a rainbow came out flagged as a power")
+          return
+        end
+      end
+    end
+    if after ~= before then
+      fail(string.format("iteration %d: %d specials went in, %d came out",
+                         iter, before, after))
+      return
+    end
+    if not b:isFull() then
+      fail("iteration " .. iter .. ": board not full after collapse")
+      return
+    end
+  end
+  passed = passed + 1
+end)
+
+test("the refill never hands out a special", function()
+  local rnd = seededRand(4242)
+  for _ = 1, 200 do
+    local b = randomBoard(rnd)
+    for i = 1, CELLS do b.cells[i] = 0 end
+    local motion = b:collapse(function(n) return rnd(n) end)
+    for i = 1, CELLS do
+      if b.special[i] then fail("the refill made a power fruit"); return end
+      if b.cells[i] == RAINBOW then fail("the refill made a rainbow"); return end
+    end
+    eq(#motion, CELLS, "a whole board of newcomers")
+  end
+  passed = passed + 1
+end)
+
+test("a fresh deal never contains a special", function()
+  for seed = 1, 200 do
+    local b = newBoard(seed)
+    local powers, rainbows = countSpecials(b)
+    if powers ~= 0 or rainbows ~= 0 then
+      fail(string.format("seed %d dealt %d powers and %d rainbows",
+                         seed, powers, rainbows))
+      return
+    end
+  end
+  passed = passed + 1
+end)
+
+test("isFull rejects a rainbow that is also a power fruit", function()
+  local b = playing()
+  ok(b:isFull(), "the fixture is fine to start with")
+  b:set(4, 4, RAINBOW)
+  ok(b:isFull(), "a plain rainbow is fine")
+  b.special[(4 - 1) * COLS + 4] = true
+  ok(not b:isFull(), "but a rainbow flagged as a power is not a legal board")
+end)
+
+test("specials survive a whole round of real play", function()
+  local madePower, madeRainbow, spent, biggest = 0, 0, 0, 0
+  for seed = 1, 25 do
+    local b = newBoard(seed)
+    b:start()
+    for _ = 1, 200 do
+      local x1, y1, x2, y2 = b:findMove()
+      if not x1 then break end
+      if b:isRainbow(x1, y1) or b:isRainbow(x2, y2) then spent = spent + 1 end
+      b:swap(x1, y1, x2, y2)
+      while b:busy() do
+        if b.phase == "clear" and b.matched > biggest then biggest = b.matched end
+        for _, sp in ipairs(b.spawns or {}) do
+          if sp.what == Fruit.SPAWN_POWER then madePower = madePower + 1
+          else madeRainbow = madeRainbow + 1 end
+        end
+        b:advance()
+        if not b:isFull() then
+          fail("seed " .. seed .. ": board has a hole after a phase")
+          return
+        end
+      end
+    end
+  end
+  note(string.format("over 25 rounds: %d power fruit, %d rainbows, %d spent; "
+                     .. "biggest single clear %d cells",
+                     madePower, madeRainbow, spent, biggest))
+  ok(madePower > 50, "power fruit are made regularly")
+  ok(madeRainbow > 0, "and rainbows do appear")
+  ok(spent > 0, "and get spent")
+  ok(biggest > 9, "and clears get big (" .. biggest .. " cells)")
+end)
+
+-- ================================================================= levels ===
+
+test("each level asks for more than the last", function()
+  local prev = 0
+  for level = 1, 12 do
+    local target = Fruit.levelTarget(level)
+    ok(target > prev, "level " .. level .. " wants more than level " .. (level - 1))
+    prev = target
+  end
+  eq(Fruit.levelTarget(0), Fruit.levelTarget(1), "a bad level is treated as the first")
+  eq(Fruit.levelTarget(nil), Fruit.levelTarget(1), "and so is none at all")
+end)
+
+test("clearing fruit fills the bar and then levels up", function()
+  local b = newBoard(500)
+  b:start()
+  eq(b.level, 1, "starts on level 1")
+  eq(b:levelProgress(), 0, "with an empty bar")
+
+  b.matched, b.chain = 10, 1
+  b:scoreClear()
+  eq(b.level, 1, "ten fruit is not a level")
+  ok(b:levelProgress() > 0, "but the bar moved")
+  ok(b:levelProgress() < 1, "and is not full")
+
+  local scoreBefore = b.score
+  b.matched, b.chain = Fruit.levelTarget(1), 1
+  b:scoreClear()
+  eq(b.level, 2, "passing the target is a level")
+  ok(b.leveledUp, "and it says so, for the host to flash")
+  ok(b.score > scoreBefore, "the level bonus was paid")
+end)
+
+test("one huge clear can carry several levels at once", function()
+  local b = newBoard(501)
+  b:start()
+  local total = Fruit.levelTarget(1) + Fruit.levelTarget(2) + Fruit.levelTarget(3)
+  b.matched, b.chain = total, 1
+  b:scoreClear()
+  eq(b.level, 4, "three levels' worth of fruit is three levels")
+  eq(b.levelCleared, 0, "with nothing left over, since it was exact")
+end)
+
+test("level progress stays inside its bar", function()
+  local b = newBoard(502)
+  b:start()
+  for _ = 1, 200 do
+    b.matched, b.chain = 7, 1
+    b:scoreClear()
+    local p = b:levelProgress()
+    if p < 0 or p > 1 then
+      fail("progress left 0..1: " .. tostring(p))
+      return
+    end
+  end
+  ok(b.level > 5, "and a lot of clearing got a long way (level " .. b.level .. ")")
+end)
+
+test("a reset puts the level back", function()
+  local b = newBoard(503)
+  b:start()
+  b.matched, b.chain = Fruit.levelTarget(1) * 3, 1
+  b:scoreClear()
+  ok(b.level > 1, "levelled up")
+  b:reset()
+  eq(b.level, 1, "and a new round starts at level 1")
+  eq(b.levelCleared, 0, "with an empty bar")
+end)
+
+test("a free hint costs nothing, a asked-for one costs", function()
+  local b = newBoard(504)
+  b:start()
+  b.score = 500
+  ok(b:showHint(true) ~= nil, "the nudge finds a move")
+  eq(b.score, 500, "and is free")
+  b.hint = nil
+  ok(b:showHint() ~= nil, "the deliberate one finds a move too")
+  eq(b.score, 500 - Fruit.HINT_COST, "and is charged for")
+end)
+
 -- ============================================================ states, RNG ===
 
 test("the round's state machine only moves the way it should", function()

@@ -26,6 +26,7 @@ M.PANEL  = key({  22,  26,  34 })
 M.HUD    = key({  26,  30,  40 })
 M.PAGE   = key({  14,  16,  22 })
 M.CURSOR = key({ 250, 238, 120 })
+M.POWER  = key({ 252, 252, 240 })
 M.SELECT = key({ 120, 224, 255 })
 M.HINT   = key({ 120, 250, 160 })
 
@@ -100,6 +101,21 @@ function M.read(ops)
   f.settled = true
   local sig = {}       -- per cell, the set of fill colours found in it
 
+  -- Only what is drawn over the BOARD counts as fruit. The side panel fills
+  -- rectangles too -- the level bar does -- and without this the reader would
+  -- take those for art and every colour in the chrome would have to be
+  -- enumerated here forever. Horizontally, because a fruit falling in from
+  -- above the board is still in its own column and must keep counting.
+  local left, right = f.colX[1], f.colX[f.cols] + f.cell
+  local onBoard = {}
+  for _, item in ipairs(f.fruit) do
+    local o = item.op
+    if item.id or (o.x < right and o.x + o.w > left) then
+      onBoard[#onBoard + 1] = item
+    end
+  end
+  f.fruit = onBoard
+
   for _, item in ipairs(f.fruit) do
     local o = item.op
     local gx, gy = cellOf(o.x + o.w / 2, o.y + o.h / 2)
@@ -154,7 +170,10 @@ function M.read(ops)
     local gx, gy = cellOf(o.op.x + 1, o.op.y + 1)
     if gx then
       local at = { x = gx, y = gy }
-      if o.colour == M.CURSOR then f.cursor = at
+      if o.colour == M.POWER then
+        f.powers = f.powers or {}
+        f.powers[(gy - 1) * f.cols + gx] = true
+      elseif o.colour == M.CURSOR then f.cursor = at
       elseif o.colour == M.SELECT then f.sel, f.cursor = at, at
       elseif o.colour == M.HINT then
         f.hint = f.hint or {}
@@ -249,11 +268,25 @@ function M.runs(f)
   return hit, n
 end
 
--- Every swap that would make a run, brute force.
-function M.legalSwaps(f)
+-- Every legal swap, brute force.
+--
+-- `ordinary`, if given, is the set of labels that are plain fruit -- learned
+-- from fresh boards, which by construction hold nothing else. Any label
+-- outside it is a special that is SPENT rather than matched, so a swap
+-- touching one is a move whatever the run scanner thinks. Without this the
+-- reader's idea of "no moves left" stops being the game's, and a board
+-- carrying a rainbow reads as deadlocked while the game plays happily on.
+function M.legalSwaps(f, ordinary)
   local out = {}
+  local function special(i)
+    return ordinary and f.grid[i] and not ordinary[f.grid[i]]
+  end
   local function trial(x1, y1, x2, y2)
     local i, j = (y1 - 1) * f.cols + x1, (y2 - 1) * f.cols + x2
+    if special(i) or special(j) then
+      out[#out + 1] = { x1, y1, x2, y2 }
+      return
+    end
     f.grid[i], f.grid[j] = f.grid[j], f.grid[i]
     local _, n = M.runs(f)
     f.grid[i], f.grid[j] = f.grid[j], f.grid[i]
@@ -271,10 +304,29 @@ end
 -- Plays one move by clicking: a cell, then its neighbour. Returns the settled
 -- frame after the cascade, the swap taken, and the ops of the busiest
 -- mid-cascade frame seen on the way -- which is what the screenshots want.
-function M.step(hs, pick)
+-- The labels that are ordinary fruit, unioned over several FRESH boards --
+-- which hold no specials by construction, so anything seen later that is not
+-- in here is one. Several boards rather than one because a single deal can
+-- miss a kind entirely; the odds are tiny but not zero, and a missed kind
+-- would be taken for a special ever after.
+function M.ordinaryKinds(boot, boards)
+  local set = {}
+  for n = 1, boards or 4 do
+    local hs = boot()
+    for _ = 1, n * 3 do hs.on.timer() end   -- idling reseeds the deal
+    hs.on.enterKey()
+    local f = M.settle(hs)
+    for i = 1, (f.cols or 8) * (f.rows or 8) do
+      if f.grid[i] then set[f.grid[i]] = true end
+    end
+  end
+  return set
+end
+
+function M.step(hs, pick, ordinary)
   local f = M.settle(hs)
   if not f.colX then return nil end
-  local swaps = M.legalSwaps(f)
+  local swaps = M.legalSwaps(f, ordinary)
   if #swaps == 0 then return nil, nil, nil, f end
 
   local s = swaps[pick and pick(#swaps) or 1]

@@ -82,6 +82,12 @@ FRUITS = [
     ("Pear",      10, 1),
     ("Watermelon",26, 3),
     ("Blueberry", 16, 1),
+    # Kind 8 is the RAINBOW -- the special made by lining up five, which is
+    # spent rather than matched. It is last because src/fruits/game.lua numbers
+    # it KINDS + 1, and it is a cut dragonfruit because pale is the one thing
+    # none of the seven playable fruits is: whatever else a player is unsure
+    # of, they can always tell this one is not an ordinary piece of fruit.
+    ("Dragonfruit", 21, 5),
 ]
 
 
@@ -307,7 +313,9 @@ def encode(sheet, name, col, row):
 def emit(sprites):
     out = [
         BEGIN,
-        "-- %d fruits at %dx%d, in two encodings of the same pixels:" % (len(sprites), SIZE, SIZE),
+        "-- %d sprites at %dx%d (seven playable fruits, then the rainbow),"
+        % (len(sprites), SIZE, SIZE),
+        "-- in two encodings of the same pixels:",
         "--   img   a TI.Image string for image.new + gc:drawImage (one call a fruit)",
         "--   runs  the identical pixels as fillRect rects, grouped by colour,",
         "--         for cells too small for a native sprite and for an OS that",

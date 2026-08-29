@@ -57,8 +57,25 @@ local CELLS = COLS * ROWS
 local KINDS = 7          -- distinct fruits; must be >= 3 for the fill below
 local RUN   = 3          -- fruit in a line that clear
 
+-- A cell holds 1..KINDS for an ordinary fruit, or RAINBOW.
+--
+-- RAINBOW is deliberately a kind value rather than a flag, because the thing
+-- that matters about it is that it equals NO ordinary fruit: every run scanner
+-- here compares cells for equality, so a rainbow can never become part of a
+-- run without anyone having to write a special case for it. It is not matched,
+-- it is *spent* -- swapped with a neighbour to clear every fruit of that
+-- neighbour's kind.
+local RAINBOW = KINDS + 1
+
+-- The other special is a flag rather than a kind, for the opposite reason: a
+-- power fruit keeps its colour and matches exactly like the fruit it was made
+-- from. What it adds is what happens when it clears -- it takes the eight
+-- cells around it with it, and those can set off further power fruit.
+local BLAST = 1          -- radius in cells; 1 means the surrounding 3x3
+
 Fruit.COLS, Fruit.ROWS, Fruit.CELLS = COLS, ROWS, CELLS
-Fruit.KINDS, Fruit.RUN = KINDS, RUN
+Fruit.KINDS, Fruit.RUN, Fruit.RAINBOW = KINDS, RUN, RAINBOW
+Fruit.BLAST = BLAST
 
 -- Scoring. A clear is scored as one event over its distinct cells, so a fruit
 -- sitting in both arms of an L clears once and scores once -- see
@@ -69,6 +86,20 @@ local LONG_BONUS    = 20   -- extra, per fruit past the third in a single clear
 -- The multiplier down a cascade. Capped, because an eight-deep chain is rare
 -- enough that letting it run away would make one lucky board the whole score.
 Fruit.CHAIN_MULT = { 1, 2, 3, 5, 8, 12 }
+
+-- Levels. Clearing fruit fills a bar; filling it is a level, and each level
+-- asks for more than the last. It is a progression marker plus the bonus
+-- below, and deliberately does NOT scale points per fruit: "what is this clear
+-- worth?" keeps one answer -- its size and the chain it is in -- rather than
+-- two that have to be multiplied together in the player's head.
+local LEVEL_BASE  = 45   -- fruit to clear for level 1
+local LEVEL_STEP  = 15   -- and this many more for each level after it
+local LEVEL_BONUS = 100  -- times the level just reached
+
+function Fruit.levelTarget(level)
+  if not level or level < 1 then level = 1 end
+  return LEVEL_BASE + LEVEL_STEP * (level - 1)
+end
 
 -- How many host ticks each phase stays on screen. At the ~0.05s the handheld's
 -- timer realistically manages these are roughly 0.15s a step, which reads as
@@ -146,20 +177,24 @@ function Fruit.new(opts)
   local self = setmetatable({}, Fruit)
   self.rand = opts.rand or function(n) return math.random(n) end
   self.best = opts.best or 0
-  self.cells  = {}
-  self.marked = {}
-  self.motion = {}
+  self.cells   = {}
+  self.marked  = {}
+  self.motion  = {}
+  self.special = {}   -- per cell: true where a power fruit sits
+  self.runs    = {}   -- the runs the last findMatches saw, for spawning
   self:reset(opts.deal ~= false)
   return self
 end
 
 function Fruit:reset(doDeal)
-  local cells, marked = self.cells, self.marked
-  for i = 1, CELLS do cells[i], marked[i] = 0, false end
+  local cells, marked, special = self.cells, self.marked, self.special
+  for i = 1, CELLS do cells[i], marked[i], special[i] = 0, false, false end
   self:clearMotion()
 
   self.score, self.moves, self.badSwaps, self.cleared = 0, 0, 0, 0
   self.chain, self.bestChain, self.matched, self.lastGain = 0, 0, 0, 0
+  self.level, self.levelCleared, self.leveledUp = 1, 0, false
+  self.spawns = {}      -- cells that became a special on the last clear
   self.pending, self.hint = nil, nil
   self.state = "ready"      -- ready | playing | paused | over
   self.phase = "idle"       -- idle | swap | unswap | clear | fall
@@ -205,11 +240,24 @@ function Fruit:isFull()
   local cells = self.cells
   for i = 1, CELLS do
     local k = cells[i]
-    if type(k) ~= "number" or k < 1 or k > KINDS or k ~= floor(k) then
+    if type(k) ~= "number" or k < 1 or k > RAINBOW or k ~= floor(k) then
       return false
     end
+    -- A rainbow has no colour, so it cannot also be a power fruit. That
+    -- combination has no meaning and nothing here may produce it.
+    if k == RAINBOW and self.special[i] then return false end
   end
   return true
+end
+
+function Fruit:isRainbow(x, y)
+  if not Fruit.inside(x, y) then return false end
+  return self.cells[(y - 1) * COLS + x] == RAINBOW
+end
+
+function Fruit:isPower(x, y)
+  if not Fruit.inside(x, y) then return false end
+  return self.special[(y - 1) * COLS + x] and true or false
 end
 
 function Fruit:copyCells(into)
@@ -218,9 +266,14 @@ function Fruit:copyCells(into)
   return t
 end
 
-function Fruit:loadCells(src)
-  local cells = self.cells
-  for i = 1, CELLS do cells[i] = src[i] end
+-- Loads a board. `specials` is optional; without it every cell is an ordinary
+-- fruit, which is what almost every test fixture wants.
+function Fruit:loadCells(src, specials)
+  local cells, special = self.cells, self.special
+  for i = 1, CELLS do
+    cells[i] = src[i]
+    special[i] = (specials and specials[i]) and true or false
+  end
 end
 
 
@@ -291,7 +344,10 @@ function Fruit:matchesAt(x, y)
   local cells = self.cells
   if not Fruit.inside(x, y) then return false end
   local k = cells[(y - 1) * COLS + x]
-  if not k or k == 0 then return false end
+  -- A rainbow equals no ordinary fruit, so it can never be in a run. Bailing
+  -- here rather than relying on that is belt and braces against a board that
+  -- somehow holds two of them side by side.
+  if not k or k == 0 or k == RAINBOW then return false end
 
   local base = (y - 1) * COLS
   local n, cx = 1, x - 1
@@ -316,9 +372,21 @@ end
 -- the marks and not from adding the run lengths up. One sweep per axis, each
 -- carrying a running run length, rather than a scan per cell.
 function Fruit:findMatches()
-  local cells, marked = self.cells, self.marked
+  local cells, marked, runs = self.cells, self.marked, self.runs
   for i = 1, CELLS do marked[i] = false end
+  for i = #runs, 1, -1 do runs[i] = nil end
   local count = 0
+
+  -- Each run is kept as well as marked. The marks are what clears; the runs
+  -- are what decides whether a special is made and where it goes, which needs
+  -- to know a four-in-a-line from an L that happens to cover four cells.
+  local function take(x, y, dx, dy, len, kind)
+    runs[#runs + 1] = { x = x, y = y, dx = dx, dy = dy, len = len, kind = kind }
+    for n = 0, len - 1 do
+      local i = (y + n * dy - 1) * COLS + (x + n * dx)
+      if not marked[i] then marked[i] = true; count = count + 1 end
+    end
+  end
 
   for y = 1, ROWS do
     local base = (y - 1) * COLS
@@ -328,11 +396,8 @@ function Fruit:findMatches()
     for x = 2, COLS + 1 do
       local k = (x <= COLS) and cells[base + x] or nil
       if k ~= kind then
-        if kind and kind ~= 0 and x - start >= RUN then
-          for j = start, x - 1 do
-            local i = base + j
-            if not marked[i] then marked[i] = true; count = count + 1 end
-          end
+        if kind and kind ~= 0 and kind ~= RAINBOW and x - start >= RUN then
+          take(start, y, 1, 0, x - start, kind)
         end
         start, kind = x, k
       end
@@ -344,11 +409,8 @@ function Fruit:findMatches()
     for y = 2, ROWS + 1 do
       local k = (y <= ROWS) and cells[(y - 1) * COLS + x] or nil
       if k ~= kind then
-        if kind and kind ~= 0 and y - start >= RUN then
-          for j = start, y - 1 do
-            local i = (j - 1) * COLS + x
-            if not marked[i] then marked[i] = true; count = count + 1 end
-          end
+        if kind and kind ~= 0 and kind ~= RAINBOW and y - start >= RUN then
+          take(x, start, 0, 1, y - start, kind)
         end
         start, kind = y, k
       end
@@ -364,6 +426,187 @@ function Fruit:hasMatch()
 end
 
 
+-- =============================================================== specials ===
+--
+-- Two of them, following Bejeweled 2, which is where most people's
+-- expectations of a match-three come from:
+--
+--   * four in a line, or an L / T / +, merges into a POWER fruit. It keeps its
+--     colour and matches like any other, but when it clears it takes the eight
+--     cells around it -- and that can set off other power fruit, so blasts
+--     chain.
+--   * five or more in a LINE merges into a RAINBOW. It has no colour and can
+--     never be matched; swapping it with a neighbour clears every fruit of
+--     that neighbour's kind.
+--
+-- The distinction that matters and is easy to get wrong: five cells in an L is
+-- a power fruit, not a rainbow. A rainbow needs five in one straight run. So
+-- the decision is made per run and per cluster, not from the number of cells
+-- cleared, which is why findMatches keeps the runs and not just the marks.
+
+local NONE, POWER, RAINBOW_SPAWN = 0, 1, 2
+Fruit.SPAWN_NONE, Fruit.SPAWN_POWER, Fruit.SPAWN_RAINBOW = NONE, POWER, RAINBOW_SPAWN
+
+-- Groups the runs into clusters of overlapping runs -- an L is two runs
+-- sharing a cell -- and decides what each cluster makes and where it goes.
+--
+-- Returns a list of { at = cell, what = POWER|RAINBOW_SPAWN, kind = k }.
+--
+-- `preferA` and `preferB` are the two cells the player's swap moved, if any. A
+-- special born from a plain line appears under the player's own hand, which is
+-- where they are looking. BOTH have to be offered, not just one: a swap
+-- changes two cells and the run can be completed by either of them, so picking
+-- a fixed one of the pair puts the special at the middle of the run half the
+-- time for no reason the player can see.
+function Fruit:planSpawns(preferA, preferB)
+  local runs = self.runs
+  local out = {}
+  if #runs == 0 then return out end
+
+  -- Which runs touch which cells, so overlaps can be found without comparing
+  -- every run against every other.
+  local owner = {}
+  for r = 1, #runs do
+    local run = runs[r]
+    for n = 0, run.len - 1 do
+      local i = (run.y + n * run.dy - 1) * COLS + (run.x + n * run.dx)
+      owner[i] = owner[i] or {}
+      owner[i][#owner[i] + 1] = r
+    end
+  end
+
+  -- Union-find over runs, joined wherever two of them share a cell.
+  local parent = {}
+  for r = 1, #runs do parent[r] = r end
+  local function find(r)
+    while parent[r] ~= r do parent[r] = parent[parent[r]]; r = parent[r] end
+    return r
+  end
+  for _, list in pairs(owner) do
+    for k = 2, #list do
+      local a, b = find(list[1]), find(list[k])
+      if a ~= b then parent[b] = a end
+    end
+  end
+
+  local clusters = {}
+  for r = 1, #runs do
+    local root = find(r)
+    clusters[root] = clusters[root] or {}
+    local c = clusters[root]
+    c[#c + 1] = r
+  end
+
+  for _, list in pairs(clusters) do
+    local longest, longestRun = 0, nil
+    for _, r in ipairs(list) do
+      if runs[r].len > longest then longest, longestRun = runs[r].len, runs[r] end
+    end
+
+    local what = NONE
+    if longest >= 5 then
+      what = RAINBOW_SPAWN
+    elseif longest >= 4 or #list >= 2 then
+      what = POWER
+    end
+
+    if what ~= NONE then
+      -- Where it lands, in order of preference: the cell the player just
+      -- moved, then a cell two runs share (the corner of an L, which is where
+      -- the eye is), then the middle of the longest run.
+      local at
+      local inCluster = {}
+      for _, r in ipairs(list) do
+        local run = runs[r]
+        for n = 0, run.len - 1 do
+          inCluster[(run.y + n * run.dy - 1) * COLS + (run.x + n * run.dx)] = true
+        end
+      end
+      if preferA and inCluster[preferA] then
+        at = preferA
+      elseif preferB and inCluster[preferB] then
+        at = preferB
+      else
+        for i, who in pairs(owner) do
+          if #who >= 2 and inCluster[i] and not at then at = i end
+        end
+        if not at then
+          local mid = floor((longestRun.len - 1) / 2)
+          at = (longestRun.y + mid * longestRun.dy - 1) * COLS
+             + (longestRun.x + mid * longestRun.dx)
+        end
+      end
+      out[#out + 1] = { at = at, what = what, kind = longestRun.kind }
+    end
+  end
+  return out
+end
+
+-- Grows `self.marked` through every power fruit caught in it, to a fixpoint.
+--
+-- A power fruit that clears takes the cells around it; if one of those is
+-- another power fruit, that one goes off too. Returns how many cells the
+-- blasts added, which is only used for reporting.
+--
+-- A rainbow caught in a blast is destroyed WITHOUT being spent -- it does not
+-- fire its own colour clear. That is Bejeweled 2's behaviour, and it is also
+-- the only version that terminates obviously: a rainbow going off inside a
+-- blast could clear a colour, which could catch more rainbows, and the
+-- fixpoint argument stops being a one-liner.
+function Fruit:detonate()
+  local marked, special = self.marked, self.special
+  -- Which power fruit have already gone off, so a blast that re-marks one
+  -- cannot set it off twice and spin here forever. Created here as well as by
+  -- the caller so this is safe to drive straight from a test.
+  self._fired = self._fired or {}
+  local added, changed = 0, true
+
+  while changed do
+    changed = false
+    for i = 1, CELLS do
+      if marked[i] and special[i] and not self._fired[i] then
+        self._fired[i] = true
+        local cx, cy = (i - 1) % COLS + 1, floor((i - 1) / COLS) + 1
+        for dy = -BLAST, BLAST do
+          for dx = -BLAST, BLAST do
+            local x, y = cx + dx, cy + dy
+            if x >= 1 and x <= COLS and y >= 1 and y <= ROWS then
+              local j = (y - 1) * COLS + x
+              if not marked[j] then
+                marked[j] = true
+                added = added + 1
+                changed = true
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  self.matched = self.matched + added
+  return added
+end
+
+-- Marks every fruit of `kind`, plus the rainbow that was spent to do it.
+-- This is not a run, so it never goes near findMatches.
+function Fruit:markColour(kind, alsoCell)
+  local cells, marked = self.cells, self.marked
+  for i = 1, CELLS do marked[i] = false end
+  local n = 0
+  for i = 1, CELLS do
+    if cells[i] == kind then marked[i] = true; n = n + 1 end
+  end
+  if alsoCell and not marked[alsoCell] then
+    marked[alsoCell] = true
+    n = n + 1
+  end
+  for i = #self.runs, 1, -1 do self.runs[i] = nil end
+  self.matched = n
+  return n
+end
+
+
 -- ----------------------------------------------------- legal moves (production) --
 
 -- Swaps two cells in place, tests only the crosses through them, and swaps
@@ -372,6 +615,13 @@ function Fruit:swapMakesMatch(x1, y1, x2, y2)
   if not Fruit.adjacent(x1, y1, x2, y2) then return false end
   local cells = self.cells
   local i, j = (y1 - 1) * COLS + x1, (y2 - 1) * COLS + x2
+
+  -- A rainbow is spent rather than matched, so a swap involving one always
+  -- does something and is always legal. This is the clause that makes a board
+  -- holding a rainbow essentially never deadlock, and it has to be in the
+  -- brute-force oracle too or the two will disagree.
+  if cells[i] == RAINBOW or cells[j] == RAINBOW then return true end
+
   if cells[i] == cells[j] then return false end   -- a no-op swap changes nothing
 
   cells[i], cells[j] = cells[j], cells[i]
@@ -428,7 +678,9 @@ function Fruit.scanRuns(cells, cols, rows, run)
   for y = 1, rows do
     for x = 1, cols do
       local k = at(x, y)
-      if k and k ~= 0 then
+      -- Same exclusion as the production scanner, arrived at the same way: a
+      -- rainbow has no colour to line up with.
+      if k and k ~= 0 and k ~= (Fruit.RAINBOW) then
         for axis = 1, 2 do
           local dx, dy = (axis == 1) and 1 or 0, (axis == 1) and 0 or 1
           local len = 1
@@ -456,6 +708,13 @@ function Fruit.allLegalSwaps(cells, cols, rows, run)
 
   local function trial(x1, y1, x2, y2)
     local i, j = (y1 - 1) * cols + x1, (y2 - 1) * cols + x2
+    -- Spending a rainbow always clears something, so it is always a move. The
+    -- run half below stays a genuinely separate opinion from findMove's; this
+    -- clause is the same rule stated twice, which is all it can be.
+    if cells[i] == Fruit.RAINBOW or cells[j] == Fruit.RAINBOW then
+      out[#out + 1] = { x1, y1, x2, y2 }
+      return
+    end
     cells[i], cells[j] = cells[j], cells[i]
     local _, n = Fruit.scanRuns(cells, cols, rows, run)
     cells[i], cells[j] = cells[j], cells[i]
@@ -495,7 +754,7 @@ end
 -- Fills self.motion with { x, fromY, toY, kind, new } so the host can animate
 -- it. New fruit get a fromY at or above 0, which is off the top of the board.
 function Fruit:collapse(pick)
-  local cells = self.cells
+  local cells, special = self.cells, self.special
   local motion = self:clearMotion()
 
   for x = 1, COLS do
@@ -505,10 +764,14 @@ function Fruit:collapse(pick)
       local k = cells[i]
       if k ~= 0 then
         if write ~= y then
-          cells[(write - 1) * COLS + x] = k
-          cells[i] = 0
-          motion[#motion + 1] =
-            { x = x, fromY = y, toY = write, kind = k, new = false }
+          local j = (write - 1) * COLS + x
+          -- A power fruit falls as a power fruit. Moving the kind and leaving
+          -- the flag behind would turn a falling special into an ordinary
+          -- fruit and hand its blast to whatever landed underneath it.
+          cells[j], special[j] = k, special[i]
+          cells[i], special[i] = 0, false
+          motion[#motion + 1] = { x = x, fromY = y, toY = write, kind = k,
+                                  power = special[j], new = false }
         end
         write = write - 1
       end
@@ -516,12 +779,14 @@ function Fruit:collapse(pick)
 
     -- Rows 1..write are the holes left over. The fruit that lands lowest starts
     -- highest above the board, so a column's newcomers never cross each other
-    -- on the way down.
+    -- on the way down. Newcomers are always ordinary: a special is something
+    -- the player earned from a match, never something the refill hands out.
     for y = 1, write do
       local k = pick(KINDS)
-      cells[(y - 1) * COLS + x] = k
+      local i = (y - 1) * COLS + x
+      cells[i], special[i] = k, false
       motion[#motion + 1] =
-        { x = x, fromY = y - write, toY = y, kind = k, new = true }
+        { x = x, fromY = y - write, toY = y, kind = k, power = false, new = true }
     end
   end
   return motion
@@ -547,9 +812,33 @@ function Fruit:scoreClear()
   self.score = self.score + gained
   self.lastGain = gained
   self.cleared = self.cleared + n
+
+  -- Level progress. The bar is fed by fruit cleared rather than by points, so
+  -- a lucky cascade advances it exactly as far as the same number of fruit
+  -- cleared one match at a time -- the level is a measure of how much board
+  -- you have got through, and the score is the measure of how well.
+  self.levelCleared = self.levelCleared + n
+  self.leveledUp = false
+  while self.levelCleared >= Fruit.levelTarget(self.level) do
+    self.levelCleared = self.levelCleared - Fruit.levelTarget(self.level)
+    self.level = self.level + 1
+    self.leveledUp = true
+    self.score = self.score + LEVEL_BONUS * self.level
+  end
+
   if self.chain > self.bestChain then self.bestChain = self.chain end
   if self.score > self.best then self.best = self.score end
   return gained
+end
+
+-- How far through the current level, 0..1, for the host's bar.
+function Fruit:levelProgress()
+  local target = Fruit.levelTarget(self.level)
+  if target <= 0 then return 0 end
+  local p = self.levelCleared / target
+  if p < 0 then return 0 end
+  if p > 1 then return 1 end
+  return p
 end
 
 
@@ -574,9 +863,10 @@ local function enter(self, phase)
 end
 
 local function swapCells(self, x1, y1, x2, y2)
-  local cells = self.cells
+  local cells, special = self.cells, self.special
   local i, j = (y1 - 1) * COLS + x1, (y2 - 1) * COLS + x2
   cells[i], cells[j] = cells[j], cells[i]
+  special[i], special[j] = special[j], special[i]
 end
 
 local function setSwapMotion(self, x1, y1, x2, y2)
@@ -600,9 +890,24 @@ function Fruit:swap(x1, y1, x2, y2)
   if not Fruit.adjacent(x1, y1, x2, y2) then return false end
 
   self.hint = nil
+  local cells = self.cells
+  local i, j = (y1 - 1) * COLS + x1, (y2 - 1) * COLS + x2
+
+  -- Spending a rainbow is settled before the swap is applied, because after it
+  -- the two cells have traded places and which one was the rainbow is no
+  -- longer obvious. Two rainbows swapped together clear the whole board, which
+  -- is the natural reading of "clear everything of the other one's colour"
+  -- when the other one has no colour.
+  local spend = nil
+  if cells[i] == RAINBOW or cells[j] == RAINBOW then
+    local rainbowAt, otherAt = i, j
+    if cells[j] == RAINBOW and cells[i] ~= RAINBOW then rainbowAt, otherAt = j, i end
+    spend = { at = rainbowAt, kind = cells[otherAt], both = cells[otherAt] == RAINBOW }
+  end
+
   swapCells(self, x1, y1, x2, y2)
   setSwapMotion(self, x1, y1, x2, y2)
-  self.pending = { x1 = x1, y1 = y1, x2 = x2, y2 = y2 }
+  self.pending = { x1 = x1, y1 = y1, x2 = x2, y2 = y2, spend = spend }
   self.chain, self.lastGain = 0, 0
   enter(self, "swap")
   return true
@@ -614,9 +919,39 @@ function Fruit:advance()
   local p = self.phase
 
   if p == "swap" then
-    if self:findMatches() > 0 then
+    local q = self.pending
+
+    if q and q.spend then
+      -- A rainbow was swapped. It is spent, not matched, so findMatches never
+      -- sees this: the marks come from the colour it was traded against.
       self.moves = self.moves + 1
       self.chain = 1
+      if q.spend.both then
+        -- Two rainbows: everything. Marked one cell at a time rather than by
+        -- colour, because there is no colour to name.
+        local marked = self.marked
+        local n = 0
+        for i = 1, CELLS do marked[i] = true; n = n + 1 end
+        for i = #self.runs, 1, -1 do self.runs[i] = nil end
+        self.matched = n
+      else
+        -- The rainbow has moved by now, so it is at the cell it was swapped
+        -- INTO, not the one it was picked up from.
+        local at = (q.spend.at == (q.y1 - 1) * COLS + q.x1)
+                   and ((q.y2 - 1) * COLS + q.x2) or ((q.y1 - 1) * COLS + q.x1)
+        self:markColour(q.spend.kind, at)
+      end
+      self.spawns = {}
+      self:clearMotion()
+      enter(self, "clear")
+
+    elseif self:findMatches() > 0 then
+      self.moves = self.moves + 1
+      self.chain = 1
+      -- A special born of the player's own swap appears under one of the two
+      -- cells they moved, whichever the run actually passes through.
+      self.spawns = self:planSpawns((q.y1 - 1) * COLS + q.x1,
+                                    (q.y2 - 1) * COLS + q.x2)
       self:clearMotion()
       enter(self, "clear")
     else
@@ -633,11 +968,48 @@ function Fruit:advance()
     enter(self, "idle")
 
   elseif p == "clear" then
-    self:scoreClear()
-    local cells, marked = self.cells, self.marked
-    for i = 1, CELLS do
-      if marked[i] then cells[i] = 0 end
+    -- Order matters here, and each step depends on the one before it.
+    --
+    -- 1. The cells that merge into a special are taken OUT of the marks: they
+    --    are not cleared, they become the new fruit. Doing this before the
+    --    blasts means a special never destroys itself.
+    local marked, special, cells = self.marked, self.special, self.cells
+    local spawns = self.spawns or {}
+    for _, sp in ipairs(spawns) do
+      if marked[sp.at] then
+        marked[sp.at] = false
+        self.matched = self.matched - 1
+      end
     end
+
+    -- 2. Power fruit caught in the marks go off, and can set off others. This
+    --    is what turns one match into a board-clearing chain, so it runs to a
+    --    fixpoint before anything is scored.
+    self._fired = {}
+    self:detonate()
+    for _, sp in ipairs(spawns) do
+      -- A blast must not swallow a special that is being born in it.
+      if marked[sp.at] then
+        marked[sp.at] = false
+        self.matched = self.matched - 1
+      end
+    end
+
+    -- 3. Now the marks are final, so this is the number that scores.
+    self:scoreClear()
+
+    -- 4. Empty them, then put the new specials in place.
+    for i = 1, CELLS do
+      if marked[i] then cells[i], special[i] = 0, false end
+    end
+    for _, sp in ipairs(spawns) do
+      if sp.what == RAINBOW_SPAWN then
+        cells[sp.at], special[sp.at] = RAINBOW, false
+      else
+        cells[sp.at], special[sp.at] = sp.kind, true
+      end
+    end
+
     self:collapse(self.rand)
     enter(self, "fall")
 
@@ -645,10 +1017,14 @@ function Fruit:advance()
     self:clearMotion()
     if self:findMatches() > 0 then
       self.chain = self.chain + 1
+      -- Mid-cascade there is no swapped cell to prefer, so a special lands on
+      -- the corner of its own shape.
+      self.spawns = self:planSpawns(nil, nil)
       enter(self, "clear")
     else
       self.pending = nil
       self.chain = 0
+      self.spawns = {}
       enter(self, "idle")
       -- The round ends where it can no longer be played. Checked here, at the
       -- one moment the board is settled and full, rather than anywhere a
@@ -736,11 +1112,14 @@ end
 -- rather than a button to lean on -- and never below zero.
 Fruit.HINT_COST = 20
 
-function Fruit:showHint()
+-- `free` skips the charge. That is the idle nudge, not a cheaper hint: a
+-- player who has stopped moving has usually stopped *seeing*, and charging
+-- them for a prompt they did not ask for would be a strange thing to do.
+function Fruit:showHint(free)
   if self.state ~= "playing" or self.phase ~= "idle" then return nil end
   local x1, y1, x2, y2 = self:findMove()
   if not x1 then return nil end
-  if not self.hint then
+  if not self.hint and not free then
     self.score = max(0, self.score - Fruit.HINT_COST)
   end
   self.hint = { x1 = x1, y1 = y1, x2 = x2, y2 = y2 }
@@ -775,7 +1154,8 @@ local MIN_PANEL = 104     -- narrower than this and the side panel is dropped
 local N = Fruit.COLS
 
 -- >>> generated by tools/fruitart.py -- do not edit by hand
--- 7 fruits at 16x16, in two encodings of the same pixels:
+-- 8 sprites at 16x16 (seven playable fruits, then the rainbow),
+-- in two encodings of the same pixels:
 --   img   a TI.Image string for image.new + gc:drawImage (one call a fruit)
 --   runs  the identical pixels as fillRect rects, grouped by colour,
 --         for cells too small for a native sprite and for an OS that
@@ -858,6 +1238,19 @@ local ART = {
       "3**)*+*)0.))01*)",
       "-+)+1+**5+)*3,**)-)),-)*2-))*.*)/0))20)).1)+31)+/3)*23)*04*)",
     } },
+  { name = "Dragonfruit", rects = 131,
+    img = "\016\000\000\000\016\000\000\000\000\000\000\000 \000\000\000\016\000\001\000\000\000\000\000\000\000\000\000\000\000\176\255\000\000\174\204\174\204\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\176\255K\231\174\204\175\228\175\228\174\204\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\176\255\174\204\175\228\253\251\157\239\175\228\174\204\000\000\176\255\000\000\000\000\000\000\000\000\000\000\000\000K\231\174\204\175\228\157\239j\164\253\251j\164\175\228\174\204K\231\176\255\000\000\000\000\000\000\000\000\000\000\174\204\175\228j\164\253\251\157\239\253\251\253\251\253\251\175\228\174\204\176\255\000\000\000\000\000\000\000\000\167\178\175\228\253\251\157\239j\164\253\251\157\239j\164\157\239\157\239\175\228K\231\000\000\000\000\000\000\000\000\174\204\175\228j\164\157\239\253\251\157\239\253\251\157\239j\164\253\251\175\228\174\204\000\000\000\000\000\000\000\000\175\228\253\251\253\251j\164\157\239j\164\253\251\253\251\157\239j\164\157\239\175\228\000\000\000\000\000\000\176\255\175\228\253\251j\164\253\251\253\251\157\239\253\251j\164\157\239\253\251\253\251\175\228\000\000\000\000\000\000K\231\175\228j\164\253\251j\164\157\239j\164\253\251\157\239\253\251j\164\253\251\175\228\176\255\000\000\000\000K\231\175\228\157\239\253\251\157\239\253\251\253\251\157\239j\164\157\239\253\251j\164\175\228K\231\000\000\000\000\000\000K\231\175\228\157\239j\164\253\251\157\239j\164\253\251j\164\253\251\175\228\174\204\167\178\000\000\000\000\000\000\167\178\175\228\253\251\253\251j\164\253\251\157\239\157\239\253\251\157\239\175\228\167\178\000\000\000\000\000\000\000\000\000\000\174\204\175\228j\164\157\239j\164\253\251j\164\253\251\175\228\174\204\000\000\000\000\000\000\000\000\000\000\000\000\167\178\174\204\175\228j\164\157\239\253\251\157\239\175\228\174\204\167\178\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\167\178\175\228\175\228\175\228\175\228\167\178\000\000\000\000\000\000\000\000\000\000",
+    pal = { 75, 29, 82, 99, 171, 63, 156, 42, 112, 200, 212, 93, 204, 47, 123, 223, 224, 232, 245, 255, 232, 255, 238, 131 },
+    runs = {
+      "/+))1+))-,)).-))1-)),.))2.))-/))//))3/)),0))10))+1))-1))/1))31))12))42))-3))03))23)).4))-5))/5))15)).6))",
+      "*-))63))*4))54))+6))46))-7))27))",
+      "/(*).)))1)))-*))2*)),+))3+))+,))4,))*.))5.))53))+5))45)),6))36))",
+      "-)))++))4+))5-)))1)*62))*3))",
+      "/)*).*))1*))-+))2+)),,))3,))+-)*4-)**/),5/),+3)*43)*,5))35))-6))26)).7,)",
+      "0*)).+))/,))--)*0-))2-*)/.))1.))./))2/)*4/))/0)).1))11))+2))-2))02))22)),3))/3))04*)34)).5))/6))16))",
+      "/*))0+)*.,))1,*),-))/-))..))0.),3.))+/*)1/))+0))-0*)30*),1)*21))41)).2*)32)*.3))13)),4*)/4))24)*05)*",
+      "-()),))*4*))5+)*)0))61))",
+    } },
 }
 -- <<< end generated
 
@@ -885,6 +1278,21 @@ local CURSOR   = { 250, 238, 120 }
 local SELECT   = { 120, 224, 255 }
 local HINT     = { 120, 250, 160 }
 
+-- A power fruit wears a ring rather than a tint, because gc:drawImage cannot
+-- recolour a sprite and the ring is an outline, which keeps the rule that
+-- nothing but fruit is ever FILLED inside a cell.
+--
+-- White, and specifically NOT the cursor's yellow. The first attempt was
+-- 255,236,120 against the cursor's 250,238,120: the frame reader could tell
+-- them apart to the byte and a player could not tell them apart at all, so a
+-- board with power fruit on it had four things that looked like the cursor.
+local POWER    = { 252, 252, 240 }
+-- The level bar's own two colours. Deliberately not shared with anything else
+-- on screen: the frame reader separates chrome from art by colour, and a value
+-- doing two jobs is how that stops working.
+local BAR_BG   = {  30,  35,  46 }
+local BAR_FILL = {  96, 170, 236 }
+
 local GOLD     = { 250, 190,  70 }
 local TEXT     = { 226, 231, 242 }
 local DIM      = { 138, 146, 166 }
@@ -903,8 +1311,15 @@ local sel = nil                 -- { x, y } while a fruit is picked up
 -- Fruit.newRandom is built to scramble apart.
 local entropy = 1
 
+-- Ticks since the player last did anything. A board they have stopped moving
+-- on is usually a board they have stopped seeing, so after a while the game
+-- lights a move for them -- free, unlike the hint they ask for with H.
+local idle = 0
+local IDLE_NUDGE = 100     -- ticks, so about five seconds at BASE_TICK
+
 local function stir(v)
   entropy = Fruit.mix(entropy, v)
+  idle = 0
 end
 
 local function col(gc, c)
@@ -918,6 +1333,25 @@ local function newRound()
   })
   cur.x, cur.y = 4, 4
   sel = nil
+end
+
+-- Starting a round DEALS a round.
+--
+-- The board behind the title screen is dealt at load, when the only entropy
+-- there has ever been is the seed's initial value -- so it is the same board
+-- every single time the document is opened. Dealing again here, at the moment
+-- the player presses enter, is what makes the round depend on how long they
+-- sat looking at the title, which is the only thing that differs between two
+-- launches of a document on a handheld with no clock worth reading.
+--
+-- This is the bug Wordle shipped, in a different coat: see the note in
+-- CLAUDE.md. It is also why tests/fruits/ui.lua boots several times with
+-- different idle times and insists the boards differ.
+local function beginRound()
+  if board.state == "ready" then
+    newRound()
+    board:start()
+  end
 end
 
 -- The sprites, as TI.Image objects, or nil if this runtime will not make them.
@@ -1068,10 +1502,22 @@ newRound()
 timer.start(BASE_TICK)
 
 function on.timer()
-  stir(1)
+  -- Deliberately not stir(): a timer tick is not the player doing something,
+  -- and resetting the idle count here would mean the nudge never fires.
+  entropy = Fruit.mix(entropy, 1)
+
   if board:busy() then
     board:tick()
     platform.window:invalidate()   -- something is moving; keep the frames coming
+    idle = 0
+    return
+  end
+
+  if board.state == "playing" and not board.hint then
+    idle = idle + 1
+    if idle >= IDLE_NUDGE and board:showHint(true) then
+      platform.window:invalidate()
+    end
   end
 end
 
@@ -1085,7 +1531,7 @@ end
 local function confirm()
   local s = board.state
   if s == "ready" then
-    board:start()
+    beginRound()
   elseif s == "over" then
     newRound()
     board:start()
@@ -1114,7 +1560,7 @@ local function steer(dir)
   local d = DELTA[dir]
   if not d then return end
 
-  if board.state == "ready" then board:start() end
+  beginRound()
   if board.state ~= "playing" or board.phase ~= "idle" then return end
 
   if sel then
@@ -1178,7 +1624,7 @@ function on.charIn(ch)
     newRound()
     board:start()
   elseif ch == "h" then
-    board:showHint()
+    board:showHint()   -- the deliberate one, and it costs
   end
 
   platform.window:invalidate()
@@ -1244,6 +1690,15 @@ local function drawCells(gc)
   end
 end
 
+-- The mark on a power fruit: a ring just inside the cell, drawn twice so it
+-- reads at sixteen pixels without a fill.
+local function powerRing(gc, x, y)
+  col(gc, POWER)
+  local px, py = cellX(x), cellY(y)
+  gc:drawRect(px + 1, py + 1, ui.cell - 3, ui.cell - 3)
+  gc:drawRect(px + 2, py + 2, ui.cell - 5, ui.cell - 5)
+end
+
 -- The fruit that are sitting still. During `clear` the matched ones are still
 -- on the board -- that is the phase's whole job, to show them going -- so they
 -- are drawn shrinking over a pale backing instead of being skipped.
@@ -1272,6 +1727,7 @@ local function drawStatic(gc)
             -- the gutter, or it would climb out of its own cell.
             local lift = (sel and sel.x == x and sel.y == y) and min(2, ui.pad) or 0
             drawFruit(gc, k, spriteX(x), spriteY(y) - lift, ui.sprite)
+            if board.special[i] then powerRing(gc, x, y) end
           end
         end
       end
@@ -1407,9 +1863,23 @@ local function drawPanel(gc)
   gc:drawLine(ix, cy, ix + iw, cy)
   cy = cy + 7
 
+  cy = panelRow(gc, "LEVEL", tostring(board.level), ix, cy, iw,
+                board.leveledUp and HINT or nil)
+
+  -- The bar under it. Drawn from the game's own 0..1 rather than from the
+  -- counts, so the panel cannot disagree with the rule about when a level ends.
+  local bw, bh = iw, 5
+  col(gc, BAR_BG)
+  gc:fillRect(ix, cy - 4, bw, bh)
+  local filled = floor(bw * board:levelProgress() + 0.5)
+  if filled > 0 then
+    col(gc, BAR_FILL)
+    gc:fillRect(ix, cy - 4, filled, bh)
+  end
+  cy = cy + 8
+
   cy = panelRow(gc, "BEST", tostring(board.best), ix, cy, iw)
   cy = panelRow(gc, "MOVES", tostring(board.moves), ix, cy, iw)
-  cy = panelRow(gc, "CLEARED", tostring(board.cleared), ix, cy, iw)
 
   -- The chain multiplier only means anything while a cascade is running, so it
   -- shows live then and the round's best otherwise.

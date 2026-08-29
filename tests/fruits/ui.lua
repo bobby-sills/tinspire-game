@@ -166,19 +166,38 @@ return function(t)
        "and few rects left over (" .. calls.fillRect .. ")")
   end)
 
-  test("exactly seven different fruits appear", function()
+  test("seven playable fruits, and nothing else on a fresh board", function()
+    -- Seven ordinary kinds, learned the way tests/fruits/frame.lua learns
+    -- them: from fresh boards, which by construction carry no specials.
+    local ordinary = Frame.ordinaryKinds(function() return t.boot(318, 212) end, 5)
+    local n = 0
+    for _ in pairs(ordinary) do n = n + 1 end
+    eq(n, 7, "seven kinds are dealt")
+  end)
+
+  test("play turns up the specials, and only the specials", function()
+    local ordinary = Frame.ordinaryKinds(function() return t.boot(318, 212) end, 5)
     local hs = started(318, 212)
-    local seen, distinct = {}, 0
-    for _ = 1, 40 do
+    local extra, powers = {}, 0
+    local nExtra = 0
+    for _ = 1, 120 do
       local f = Frame.settle(hs)
       for i = 1, 64 do
         local k = f.grid[i]
-        if k and not seen[k] then seen[k] = true; distinct = distinct + 1 end
+        if k and not ordinary[k] and not extra[k] then
+          extra[k] = true
+          nExtra = nExtra + 1
+        end
       end
-      if not Frame.step(hs) then break end
+      if f.powers then
+        for _ in pairs(f.powers) do powers = powers + 1 end
+      end
+      if not Frame.step(hs, nil, ordinary) then break end
     end
-    print("  note  " .. distinct .. " distinct sprites seen over a round")
-    eq(distinct, 7, "seven distinct sprites over a whole round")
+    print(string.format("  note  %d sprite beyond the seven, %d power rings seen",
+                        nExtra, powers))
+    ok(nExtra <= 1, "at most one extra sprite ever appears -- the rainbow")
+    ok(powers > 0, "power fruit are marked with a ring")
   end)
 
   test("a frame stays inside its draw budget", function()
@@ -506,18 +525,82 @@ return function(t)
   end)
 
   test("a round played to the end says so", function()
+    -- The autoplayer has to know it can spend a rainbow, or it stalls on a
+    -- board the game is perfectly happy with and the round never ends.
+    local ordinary = Frame.ordinaryKinds(function() return t.boot(318, 212) end, 5)
     local hs = started(318, 212)
-    for _ = 1, 4000 do
-      if not Frame.step(hs) then break end
+    local moves = 0
+    for _ = 1, 6000 do
+      if not Frame.step(hs, nil, ordinary) then break end
+      moves = moves + 1
     end
     local f = Frame.frame(hs)
     local said = false
     for _, s in ipairs(f.text) do
       if s == "NO MOVES LEFT" then said = true end
     end
-    ok(said, "the deadlock panel is up")
-    eq(#Frame.legalSwaps(Frame.read(select(2, hs:paint()))), 0,
+    print("  note  the round ran " .. moves .. " moves before deadlock")
+    ok(said, "the deadlock panel is up after " .. moves .. " moves")
+    eq(#Frame.legalSwaps(Frame.read(select(2, hs:paint())), ordinary), 0,
        "and the frame's own brute force agrees there is nothing left")
+  end)
+
+  test("the level and its bar advance as fruit are cleared", function()
+    local ordinary = Frame.ordinaryKinds(function() return t.boot(318, 212) end, 3)
+    local hs = started(318, 212)
+
+    local function levelText()
+      local f = Frame.frame(hs)
+      for i, str in ipairs(f.text) do
+        if str == "LEVEL" and f.text[i + 1] then return tonumber(f.text[i + 1]) end
+      end
+      return nil
+    end
+
+    eq(levelText(), 1, "a round opens on level 1")
+    local bar0 = 0
+    for _, o in ipairs(select(2, hs:paint())) do
+      if o.op == "fillRect" and o.color[1] == 96 and o.color[2] == 170 then
+        bar0 = o.w
+      end
+    end
+    eq(bar0, 0, "with an empty bar")
+
+    for _ = 1, 60 do
+      if (levelText() or 1) > 1 then break end
+      if not Frame.step(hs, nil, ordinary) then break end
+    end
+    local lv = levelText()
+    ok(lv and lv > 1, "clearing fruit levelled it up (reached " .. tostring(lv) .. ")")
+  end)
+
+  test("the game nudges a hint at a player who has stopped moving", function()
+    local hs = started(318, 212)
+    Frame.settle(hs)
+    eq(Frame.frame(hs).hint, nil, "nothing lit to begin with")
+
+    -- Idle. No input at all, just the clock.
+    local lit
+    for _ = 1, 400 do
+      hs.on.timer()
+      local f = Frame.frame(hs)
+      if f.hint then lit = f; break end
+    end
+    ok(lit ~= nil, "a hint appeared unprompted")
+    if not lit then return end
+    ok(#lit.hint == 2, "and it lights both ends of a swap")
+
+    -- Free, unlike the one asked for with H.
+    local function score()
+      local f = Frame.frame(hs)
+      for i, str in ipairs(f.text) do
+        if str == "SCORE" and f.text[i + 1] then return tonumber(f.text[i + 1]) end
+      end
+      return nil
+    end
+    local before = score()
+    for _ = 1, 200 do hs.on.timer() end
+    eq(score(), before, "and idling further costs nothing")
   end)
 
   test("pause and restart behave", function()

@@ -51,6 +51,10 @@ def render(src: Path, dst: Path, scale: int) -> None:
     img = Image.new("RGB", (W, H), (0, 0, 0))
     d = ImageDraw.Draw(img)
 
+    # TI.Image sprites the frame uses, keyed by the id its drawImage lines cite.
+    # Six hex digits a pixel, or "------" for a pixel the alpha bit leaves out.
+    images = {}
+
     for line in src.read_text(encoding="utf-8").splitlines():
         if not line:
             continue
@@ -58,7 +62,34 @@ def render(src: Path, dst: Path, scale: int) -> None:
         parts = line.split("\t")
         op = parts[0]
 
-        if op == "drawString":
+        if op == "image":
+            iid, w, h = (int(v) for v in parts[1:4])
+            blob = parts[4]
+            px = []
+            for i in range(w * h):
+                cell = blob[i * 6:(i + 1) * 6]
+                px.append(None if cell == "------" else
+                          (int(cell[0:2], 16), int(cell[2:4], 16), int(cell[4:6], 16)))
+            images[iid] = (w, h, px)
+
+        elif op == "drawImage":
+            x, y, iid = (int(v) for v in parts[1:4])
+            entry = images.get(iid)
+            if entry is None:
+                continue
+            w, h, px = entry
+            # A pixel at a time: the sprites are 16x16 and a frame holds at most
+            # a board's worth, so this is nothing beside the font rendering.
+            for sy in range(h):
+                for sx in range(w):
+                    c = px[sy * w + sx]
+                    if c is None:
+                        continue
+                    dx, dy = x + sx, y + sy
+                    if 0 <= dx < W and 0 <= dy < H:
+                        img.putpixel((dx, dy), c)
+
+        elif op == "drawString":
             x, y, r, g, b, size = (int(v) for v in parts[1:7])
             style, text = parts[7], "\t".join(parts[8:])
             d.text((x, y), text, fill=(r, g, b), font=font(size, style))

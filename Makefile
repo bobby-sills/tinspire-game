@@ -4,6 +4,7 @@
 #
 #   make                    build src/snake  -> Snake.tns
 #   make GAME=2048          build src/2048   -> 2048.tns
+#   make GAME=fruits        build src/fruits -> Fruits.tns
 #   make GAME=2048 test     run that game's tests
 #   make screenshots        render preview PNGs into build/<game>/screenshots
 #   make all-games          build every game under src/
@@ -30,7 +31,7 @@ TNS    := $(TNS_NAME).tns
 
 GAMES  := $(notdir $(wildcard src/*))
 
-.PHONY: all bundle tns test check screenshots all-games list clean
+.PHONY: all bundle tns test check screenshots all-games list probes clean
 
 all: tns
 
@@ -75,6 +76,16 @@ screenshots: $(BUNDLE)
 
 all-games:
 	@for g in $(GAMES); do $(MAKE) --no-print-directory GAME=$$g || exit 1; done
+
+# Throwaway documents that ask a real calculator a question this container
+# cannot answer. tools/probe/imageprobe2.lua is the one that established the
+# TI.Image layout src/fruits/main.lua now relies on. Not games: they ship
+# nothing, and the .tns they build are not committed.
+probes:
+	@for p in tools/probe/*.lua; do \
+		out=$$(basename $$p .lua | sed 's/^./\U&/').tns; \
+		$(LUNA) $$p $$out && echo "built -> $$out"; \
+	done
 
 # Bundle + tests, the way CI would check a change.
 check: bundle test

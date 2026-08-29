@@ -88,13 +88,7 @@ return function(hs, capture)
   local slideOps = captureRunSlide(hs)
   if slideOps then capture("sliding", slideOps) end
 
-  -- 4. A half-typed tile number. "1" is the ambiguous digit on a 4x4 -- 10 to
-  --    15 all start with it -- so the game waits for a second digit.
-  hs.on.charIn("1")
-  capture("typing", select(2, hs:paint()))
-  hs.on.escapeKey()  -- clear the entry rather than commit it
-
-  -- 5. The hint mid-search. Asked of a freshly dealt 4x4, which needs a
+  -- 4. The hint mid-search. Asked of a freshly dealt 4x4, which needs a
   --    50-move solution and so will still be searching many ticks later --
   --    which is the honest picture of what this costs.
   hs.on.charIn("h")
@@ -103,17 +97,17 @@ return function(hs, capture)
   hs.on.arrowKey("left")   -- any move abandons a search for a board that was
   Frame.settle(hs)         -- about to stop existing
 
-  -- 6. Paused.
+  -- 5. Paused.
   hs.on.escapeKey()
   capture("paused", select(2, hs:paint()))
   hs.on.escapeKey()
 
-  -- 7. The 5x5, whose two-digit numbers are the ones that had to shrink.
+  -- 6. The 5x5, whose two-digit numbers are the ones that had to shrink.
   goToSize(hs, 5)
   Frame.play(hs, 40)
   capture("big", select(2, hs:paint()))
 
-  -- 8. A 3x3 played out by the hint, which at that size does finish inside
+  -- 7. A 3x3 played out by the hint, which at that size does finish inside
   --    its budget, so the win panel is a real solve rather than a fixture.
   goToSize(hs, 3)
   local done = false

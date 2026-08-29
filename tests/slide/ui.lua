@@ -235,57 +235,41 @@ return function(t)
     end
   end)
 
-  test("slide: a number key moves the tile with that number", function()
-    -- The fast way to play on a calculator, and the one with a two-digit
-    -- entry to get right.
+  test("slide: 2/4/6/8 do exactly what the arrows do", function()
+    -- The number pad is laid out 7 8 9 / 4 5 6 / 1 2 3, so these four digits
+    -- sit where the arrows point. All on one board: a second harness would
+    -- deal a different scramble, which is the point of the game owning its
+    -- generator.
     local hs = boot()
     hs.on.enterKey()
-    local f = Frame.frame(hs)
-    local n = f.n
-    local gx = (f.gap - 1) % n + 1
-    local gy = math.floor((f.gap - 1) / n) + 1
+    local start = Frame.signature(Frame.frame(hs))
 
-    -- A tile two cells from the gap along its row, so the run slide is
-    -- unambiguous, or the neighbour if the gap is against an edge.
-    local tx = (gx <= n - 2) and gx + 2 or gx - 2
-    local target = f.grid[(gy - 1) * n + tx]
-    ok(target and target > 0, "picked a tile in the gap's row (" .. tostring(target) .. ")")
+    for _, pair in ipairs({ { "up", "8" }, { "down", "2" },
+                            { "left", "4" }, { "right", "6" } }) do
+      hs.on.arrowKey(pair[1])
+      Frame.settle(hs)
+      local byArrow = Frame.signature(Frame.frame(hs))
 
-    local before = Frame.signature(f)
-    for i = 1, #tostring(target) do
-      hs.on.charIn(string.sub(tostring(target), i, i))
+      hs.on.charIn("u")
+      Frame.settle(hs)
+      eq(Frame.signature(Frame.frame(hs)), start, "undo returned to the deal")
+
+      hs.on.charIn(pair[2])
+      Frame.settle(hs)
+      eq(Frame.signature(Frame.frame(hs)), byArrow,
+        pair[2] .. " does what " .. pair[1] .. " does")
+
+      hs.on.charIn("u")
+      Frame.settle(hs)
     end
-    hs.on.enterKey()          -- commit, in case the entry was still open
-    Frame.settle(hs)
 
-    local g = Frame.frame(hs)
-    ok(Frame.signature(g) ~= before, "typing " .. target .. " changed the board")
-    eq(g.gap, (gy - 1) * n + tx, "the gap ended where that tile was")
-    -- A run slide shuffles every tile along by one; the one that was typed
-    -- moves a single cell toward the gap, it does not jump into it.
-    local towardGap = (tx > gx) and -1 or 1
-    eq(g.grid[(gy - 1) * n + tx + towardGap], target, "and the tile moved one cell over")
-    eq(g.grid[f.gap], f.grid[(gy - 1) * n + gx + towardGap * -1],
-      "while the tile beside the gap is the one that filled it")
-
-    -- A number not in line with the gap is refused, not applied to something
-    -- else. Find one two rows and two columns away.
-    local idle = Frame.signature(g)
-    local ngx = (g.gap - 1) % n + 1
-    local ngy = math.floor((g.gap - 1) / n) + 1
-    for y = 1, n do
-      for x = 1, n do
-        if x ~= ngx and y ~= ngy then
-          local v = g.grid[(y - 1) * n + x]
-          for i = 1, #tostring(v) do
-            hs.on.charIn(string.sub(tostring(v), i, i))
-          end
-          hs.on.enterKey()
-          Frame.settle(hs)
-        end
-      end
+    -- The digits that are not directions must be inert, not wired to something
+    -- surprising, and neither must the letters the generic suite presses.
+    for _, ch in ipairs({ "0", "1", "3", "5", "7", "9", "z", "q", "!" }) do
+      hs.on.charIn(ch)
+      Frame.settle(hs)
     end
-    eq(Frame.signature(Frame.frame(hs)), idle, "out-of-line numbers moved nothing")
+    eq(Frame.signature(Frame.frame(hs)), start, "junk keys moved nothing")
   end)
 
   test("slide: undo puts the previous board back on screen", function()

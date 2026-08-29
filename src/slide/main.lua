@@ -15,7 +15,6 @@ local Puzzle = Puzzle or require("game")
 local BASE_TICK    = 0.05  -- host timer period, the practical floor on hardware
 local SLIDE_TICKS  = 3     -- ticks a tile takes to travel one cell
 local SECOND_TICKS = 20    -- ticks per displayed second, i.e. 1 / BASE_TICK
-local ENTRY_TICKS  = 14    -- how long a half-typed tile number waits for a digit
 
 -- Hint budget. tests/slide/run.lua's benchmark measures this search at about
 -- 200000 nodes/second on the container it was developed in; a CX II running
@@ -56,8 +55,6 @@ local ui = { w = 318, h = 212, bx = 0, by = HUD_H, side = 0, tile = 0, gap = 0 }
 local entropy  = 1     -- folded into the seed by every tick, key and click
 local inverted = false -- arrow convention; see ARROW_HELP below
 local anim     = nil   -- { tiles, t } while a slide is on screen, else nil
-local entry    = ""    -- half-typed tile number
-local entryAge = 0
 local hint     = nil   -- { solver, plan, at, msg, tone }
 local puzzle
 
@@ -114,7 +111,7 @@ local function newPuzzle(size)
   puzzle = Puzzle.new({ size = size or (puzzle and puzzle.size) or 4,
                         rand = newRand(),
                         bests = puzzle and puzzle.bests or nil })
-  anim, entry, entryAge = nil, "", 0
+  anim = nil
   clearHint()
 end
 
@@ -180,42 +177,12 @@ local function cycleSize()
   layout()
 end
 
--- Commits whatever tile number has been typed so far.
-local function commitEntry()
-  local v = tonumber(entry)
-  entry, entryAge = "", 0
-  if v then
-    begin()
-    afterMove(puzzle:slideTile(v))
-  end
-end
-
--- Number keys are the fast way to play on a calculator -- the pad is right
--- there -- but 4x4 and 5x5 have two-digit tiles, so a digit may be the whole
--- number or the start of one. It is committed the moment no longer tile number
--- begins with what has been typed (on 4x4 there is nothing above 15, so "2" is
--- unambiguous and moves at once), and otherwise after ENTRY_TICKS or on enter.
-local function typeDigit(d)
-  local maxV = puzzle.cells - 1
-  local cand = entry .. d
-  if (tonumber(cand) or 0) > maxV then cand = d end
-  if (tonumber(cand) or 0) < 1 then
-    entry, entryAge = "", 0
-    return
-  end
-
-  local extendable = false
-  for v = 1, maxV do
-    local s = tostring(v)
-    if #s > #cand and string.sub(s, 1, #cand) == cand then
-      extendable = true
-      break
-    end
-  end
-
-  entry, entryAge = cand, 0
-  if not extendable then commitEntry() end
-end
+-- The calculator's number pad is laid out 7 8 9 / 4 5 6 / 1 2 3, so these four
+-- digits sit exactly where the arrows point. Snake and 2048 both take them,
+-- and a player moving between the games should not have to relearn the keys.
+local DIGIT_DIRS = {
+  ["8"] = "up", ["2"] = "down", ["4"] = "left", ["6"] = "right",
+}
 
 local function startHint()
   if puzzle.state ~= "playing" then return end
@@ -264,41 +231,32 @@ local function togglePause()
   end
 end
 
+local function moveTile(dir)
+  begin()
+  afterMove(puzzle:step(dir, inverted))
+end
+
 function on.arrowKey(key)
   entropy = Puzzle.mix(entropy, 7)
-  if entry ~= "" then commitEntry() end
-  begin()
-  afterMove(puzzle:step(key, inverted))
+  moveTile(key)
   platform.window:invalidate()
 end
 
 function on.enterKey()
   entropy = Puzzle.mix(entropy, 11)
-  if entry ~= "" then
-    commitEntry()
-  else
-    confirm()
-  end
+  confirm()
   platform.window:invalidate()
 end
 
 function on.escapeKey()
   entropy = Puzzle.mix(entropy, 13)
-  if entry ~= "" then
-    entry, entryAge = "", 0
-  else
-    togglePause()
-  end
+  togglePause()
   platform.window:invalidate()
 end
 
 function on.backspaceKey()
   entropy = Puzzle.mix(entropy, 17)
-  if entry ~= "" then
-    entry = string.sub(entry, 1, #entry - 1)
-  else
-    undoMove()
-  end
+  undoMove()
   platform.window:invalidate()
 end
 
@@ -306,8 +264,8 @@ function on.charIn(ch)
   ch = string.lower(ch or "")
   entropy = Puzzle.mix(entropy, #ch > 0 and string.byte(ch) or 0)
 
-  if ch >= "0" and ch <= "9" and #ch == 1 then
-    typeDigit(ch)
+  if DIGIT_DIRS[ch] then
+    moveTile(DIGIT_DIRS[ch])
   elseif ch == "u" then
     undoMove()
   elseif ch == "r" then
@@ -332,7 +290,6 @@ end
 -- always done and what people reach for without being told.
 function on.mouseDown(x, y)
   entropy = Puzzle.mix(Puzzle.mix(entropy, x), y)
-  if entry ~= "" then entry, entryAge = "", 0 end
 
   if puzzle.state ~= "playing" and puzzle.state ~= "ready" then
     confirm()
@@ -371,12 +328,6 @@ function on.timer()
   if puzzle.state == "playing" then
     puzzle:advance(BASE_TICK)
     if ticks % SECOND_TICKS == 0 then dirty = true end
-  end
-
-  if entry ~= "" then
-    entryAge = entryAge + 1
-    if entryAge >= ENTRY_TICKS then commitEntry() end
-    dirty = true
   end
 
   -- One slice of the hint search per tick, never the whole thing: running it
@@ -556,22 +507,19 @@ local function drawHud(gc)
   gc:drawString(stats, math.max(4, statsX), 5, "top")
 end
 
--- The strip under the board says one thing at a time, in priority order: what
--- the player is halfway through typing, then whatever the hint search has to
--- report, then the controls. Each degrades to a shorter form rather than
--- assuming the full line fits at whatever width the font turns out to be.
+-- The strip under the board says one thing at a time: whatever the hint search
+-- has to report, else the controls. Each degrades to a shorter form rather
+-- than assuming the full line fits at whatever width the font turns out to be.
 local function drawStrip(gc)
   if not ui.hint then return end
   gc:setFont("sansserif", "r", 9)
 
   local lines, tone
-  if entry ~= "" then
-    lines, tone = { "Tile " .. entry .. "_   enter to move", "Tile " .. entry .. "_" }, GOLD
-  elseif hint and hint.msg then
+  if hint and hint.msg then
     lines, tone = { hint.msg }, hint.tone or DIM
   else
     lines, tone = {
-      ARROW_HELP[inverted] .. "    digits move a tile    U undo    H hint",
+      ARROW_HELP[inverted] .. "    2/4/6/8 too    U undo    H hint",
       ARROW_HELP[inverted] .. "    U undo    H hint",
       ARROW_HELP[inverted],
     }, DIM
@@ -632,7 +580,7 @@ local function drawOverlay(gc)
     drawPanel(gc, "SLIDE", {
       { "Put 1-" .. (puzzle.cells - 1) .. " back in order" },
       { ARROW_HELP[inverted] },
-      { "Digits move a tile; a click slides one" },
+      { "2/4/6/8 do the same; a click slides a tile" },
       { "S size    I invert arrows    H hint" },
       { "Press enter to start", true },
     }, GOLD)

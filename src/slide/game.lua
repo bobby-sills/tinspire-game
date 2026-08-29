@@ -179,13 +179,6 @@ end
 -- cell v itself. Everything about "home" follows from that one line.
 function Puzzle:homeOf(v) return v end
 
-function Puzzle:findTile(v)
-  for i = 1, self.cells do
-    if self.tiles[i] == v then return i end
-  end
-  return nil
-end
-
 function Puzzle:isHome(i)
   local v = self.tiles[i]
   return v ~= 0 and v == i
@@ -384,14 +377,6 @@ function Puzzle:step(dir, inverted)
   if not dx then return 0 end
   local bx, by = self:blankXY()
   return self:slideTo(bx + dx, by + dy)
-end
-
--- A number key: move the tile with that number, if it is in line with the gap.
-function Puzzle:slideTile(v)
-  if type(v) ~= "number" or v < 1 or v > self.cells - 1 then return 0 end
-  local i = self:findTile(v)
-  if not i then return 0 end
-  return self:slideTo(self:colOf(i), self:rowOf(i))
 end
 
 function Puzzle:canUndo() return #self.undoStack > 0 end

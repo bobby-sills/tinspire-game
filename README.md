@@ -576,10 +576,9 @@ The 15-puzzle: numbered tiles and one gap, to be pushed back into order.
 
 | Key | Action |
 | --- | --- |
-| Arrows | Slide the tile in that direction into the gap |
-| Digits | Move the tile with that number |
-| `enter` | Start, resume, commit a half-typed number, deal a new puzzle |
-| `esc` or `P` | Pause; clears a half-typed number first |
+| Arrows, or `2`/`4`/`6`/`8` | Slide the tile in that direction into the gap |
+| `enter` | Start, resume, deal a new puzzle |
+| `esc` or `P` | Pause |
 | `U` or `backspace` | Undo — unlimited, all the way back to the deal |
 | `R` | New puzzle at the same size |
 | `S` | Change size: 3x3, 4x4, 5x5 |
@@ -628,7 +627,7 @@ never changes solvability.** Thousands of random slides at every size, with the
 oracle re-run after every single one. A move implementation that quietly
 corrupts the board fails there and nowhere else.
 
-### Arrows, digits and clicks
+### Arrows and clicks
 
 The arrow convention has to be stated, because the two readings are exact
 opposites and the wrong one feels broken rather than merely unfamiliar. Here an
@@ -637,13 +636,10 @@ sitting to the right of the gap leftwards into it, so the gap moves right.
 `I` swaps it for the other reading, since preferences genuinely differ, and
 whichever is in force is written under the board.
 
-Digits are the fast way to play — this is a calculator, the number pad is right
-there, and it beats arrows comfortably. On 4x4 and 5x5 a tile number may be two
-digits, so a digit is committed the moment no longer tile number begins with
-what has been typed: on 4x4 there is nothing above 15, so `2` is unambiguous
-and moves at once, while `1` waits for a second digit, for `enter`, or for a
-short timeout. What is pending is shown under the board rather than left to
-look like a dropped keypress.
+`2`, `4`, `6` and `8` do the same thing as the arrows. The number pad is laid
+out `7 8 9` / `4 5 6` / `1 2 3`, so those four digits sit exactly where the
+arrows point, and Snake and 2048 already take them — someone moving between the
+games shouldn't have to relearn the keys. They follow the `I` toggle too.
 
 Clicking a tile in line with the gap but not next to it slides the whole run of
 tiles between them, which is what this puzzle has always done and what people

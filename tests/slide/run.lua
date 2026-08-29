@@ -255,16 +255,12 @@ test("a legal move never changes solvability", function()
   end
 end)
 
-test("arrow moves and number moves keep it legal too", function()
+test("arrow moves keep it legal too, in either convention", function()
   local rand = seededRand(97531)
   for _, n in ipairs(SIZES) do
     local p = playing(n, 8080 + n)
     for _ = 1, 3000 do
-      if rand(2) == 1 then
-        p:step(Puzzle.DIRS[rand(4)], rand(2) == 1)
-      else
-        p:slideTile(rand(p.cells - 1))
-      end
+      p:step(Puzzle.DIRS[rand(4)], rand(2) == 1)
       if not p:solvable() or not p:isPermutation() then
         return fail(n .. "x" .. n .. ": a keyed move corrupted the board")
       end
@@ -308,9 +304,6 @@ test("only tiles in line with the gap can move", function()
   ok(not p:canSlideTo(5, by), "off the right edge is not a move")
   ok(not p:canSlideTo(bx, 0) and not p:canSlideTo(bx, 5), "off top and bottom")
   ok(not p:canSlideTo(nil, nil), "nil is not a move")
-  eq(p:slideTile(0), 0, "there is no tile 0")
-  eq(p:slideTile(16), 0, "there is no tile 16 on a 4x4")
-  eq(p:slideTile("7"), 0, "a string is not a tile number")
 end)
 
 test("a run slide moves exactly the tiles between the gap and the target", function()
@@ -596,32 +589,6 @@ test("the inverse convention is the exact mirror of it", function()
   eq(sig(q), before, "right then left is a round trip")
 end)
 
-test("a number key moves that tile when it is in line with the gap", function()
-  local p = playing(4, 1, false)   -- solved: gap at (4,4)
-  eq(p:slideTile(7), 0, "tile 7 is not in line with the gap")
-  eq(p:slideTile(15), 1, "tile 15 is beside the gap")
-  eq(p:get(4, 4), 15, "and it moved")
-
-  local q = playing(4, 1, false)
-  eq(q:slideTile(13), 3, "tile 13 is in the gap's row, three cells away")
-  eq(q:get(1, 4), 0, "so the whole run came with it")
-
-  -- Every tile at every size: the number key and the click agree exactly.
-  for _, n in ipairs(SIZES) do
-    local r = playing(n, 771 + n)
-    local disagreed = 0
-    for v = 1, r.cells - 1 do
-      local i = r:findTile(v)
-      local canClick = r:canSlideTo(r:colOf(i), r:rowOf(i))
-      local a = Puzzle.new({ size = n, rand = seededRand(771 + n) })
-      a:start()
-      local moved = a:slideTile(v)
-      if (moved > 0) ~= canClick then disagreed = disagreed + 1 end
-    end
-    eq(disagreed, 0, n .. "x" .. n .. ": tiles where number and click disagreed")
-  end
-end)
-
 -- ----------------------------------------------------------------- sizes --
 
 test("the rules are generic over board size", function()
@@ -630,7 +597,6 @@ test("the rules are generic over board size", function()
     eq(p.size, n, "size")
     eq(p.cells, n * n, "cells")
     eq(#p.tiles, n * n, "one entry per cell")
-    eq(p:findTile(n * n - 1) ~= nil, true, "the highest tile exists")
     eq(p.tiles[p.blank], 0, "the cached gap index points at the gap")
   end
 

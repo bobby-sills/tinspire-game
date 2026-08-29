@@ -1055,15 +1055,13 @@ The answer list came from the original Wordle's JavaScript bundle and carries
 rather than pretending otherwise. Swapping in a different list is one file and
 one command.
 
-Fruits' sprites are a Creative Commons sheet supplied by the repository
-owner. **Which** Creative Commons licence, and the author's name, were not
-recorded and cannot be checked from this container — the sites these packs are
-published on are blocked by the egress proxy. `assets/fruits/README.md` says so
-plainly, spells out what each variant would require, and asks anyone
-redistributing or making commercial use of it to establish the terms first.
-That is a gap to close, not a conclusion. The sheet is kept whole and exactly
-as supplied; `tools/fruitart.py` is what turns seven of its sprites into
-something a calculator can draw.
+Fruits' sprites are a **CC0** sheet supplied by the repository owner — public
+domain, so no attribution is required and none is owed. The author's name and
+the page it came from were not recorded and cannot be recovered from this
+container, which means the terms rest on the owner's word rather than on a
+source that was read here; `assets/fruits/README.md` says so plainly. The sheet
+is kept whole and exactly as supplied; `tools/fruitart.py` is what turns seven
+of its sprites into something a calculator can draw.
 
 Everything else here is original.
 

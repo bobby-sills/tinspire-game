@@ -4,29 +4,24 @@
 variants each of thirty-eight fruits and vegetables. The whole sheet uses only
 38 distinct colours, and no single sprite uses more than seven.
 
-## Licence and provenance — read this before redistributing
+## Licence
 
-The sheet was supplied by the repository owner, who says it was published under
-**a Creative Commons licence**.
+**CC0** — public domain dedication, per the repository owner, who supplied the
+sheet. CC0 waives copyright to the extent possible, so there is no attribution
+requirement, no share-alike obligation on the sprite data generated from it in
+`src/fruits/main.lua`, and no restriction on commercial use.
 
-**Which Creative Commons licence was not recorded, and cannot be checked from
-this container** — the asset sites these packs are published on are blocked by
-the egress proxy here, and nothing in the PNG itself carries the terms. That
-distinction matters and this file will not paper over it:
+Two honest caveats, neither of which changes anything for this repository:
 
-- **CC0** would require nothing at all.
-- **CC BY** would require crediting the author by name, which this file
-  currently cannot do because the author's name was not recorded either.
-- **CC BY-SA** would additionally impose share-alike terms on derived art —
-  which the generated sprite data in `src/fruits/main.lua` arguably is.
-- **CC BY-NC** would forbid commercial use.
-
-So: the art is used here in good faith on the owner's word, in a
-non-commercial hobby repository. **Anyone redistributing this, and anyone
-putting it to commercial use, should establish the specific licence and the
-author's name first, and fill them in above.** The klondike pack next door
-carries a similar note for a similar reason; both are gaps to close, not
-conclusions.
+- The **author's name and the URL it came from were not recorded**, and neither
+  can be recovered here — the asset sites these packs are published on are
+  blocked by this container's egress proxy, and nothing in the PNG itself
+  carries them. CC0 asks for no attribution, so nothing is owed; but anyone who
+  wants to credit the author, or to re-verify the terms before relying on them
+  commercially, will need to track the pack down first.
+- The licence is recorded **on the owner's word**, not from the source page.
+  That is the same footing as `assets/klondike/README.md`, which says so for
+  the same reason.
 
 ## What is kept here
 

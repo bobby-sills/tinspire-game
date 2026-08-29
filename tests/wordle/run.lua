@@ -160,6 +160,104 @@ test("binary search finds every word and rejects non-words", function()
   end
 end)
 
+-- ------------------------------------------------------------------- rng --
+-- The answer generator is the module's own, because the handheld will not
+-- reseed math.random -- see the comment in game.lua. These check the
+-- properties the answer draw actually depends on.
+
+test("the generator stays in range", function()
+  local N = Wordle.answerCount()
+  local r = Wordle.newRandom(20240101)
+  local low, high, bad = math.huge, -math.huge, 0
+  for _ = 1, 200000 do
+    local v = r(N)
+    if v < 1 or v > N or v ~= math.floor(v) then bad = bad + 1 end
+    if v < low then low = v end
+    if v > high then high = v end
+  end
+  eq(bad, 0, "every draw is a whole number in 1..N")
+  eq(low, 1, "the first word can come up")
+  eq(high, N, "the last word can come up")
+  eq(Wordle.newRandom(7)(1), 1, "a one-element range always gives 1")
+end)
+
+test("the generator is deterministic for a seed", function()
+  local a, b = Wordle.newRandom(4242), Wordle.newRandom(4242)
+  local same = true
+  for _ = 1, 1000 do
+    if a(2315) ~= b(2315) then same = false end
+  end
+  ok(same, "two generators on the same seed agree")
+
+  local c = Wordle.newRandom(4243)
+  local differs = false
+  for _ = 1, 20 do
+    if Wordle.newRandom(4242)(2315) ~= c(2315) then differs = true end
+  end
+  ok(differs, "a different seed gives a different sequence")
+end)
+
+test("neighbouring seeds give different words", function()
+  -- The property that actually matters on the device: the seed is a count of
+  -- timer ticks, so two launches differ by a handful. A raw MINSTD fails this
+  -- badly -- from a small seed its first output is tiny, and seeds 1 through
+  -- 10 all floor to the same word -- which is why newRandom scrambles and
+  -- warms up before handing the closure back.
+  local N = Wordle.answerCount()
+  local seen, distinct = {}, 0
+  for seed = 1, 40 do
+    local w = Wordle.answerAt(Wordle.newRandom(seed)(N))
+    if not seen[w] then seen[w] = true; distinct = distinct + 1 end
+  end
+  ok(distinct >= 38, "40 consecutive seeds gave " .. distinct .. " different words")
+end)
+
+test("the generator spreads over the whole answer list", function()
+  -- Not a randomness proof, just a check that no large part of the list is
+  -- unreachable: draw plenty and count how much of the list gets hit.
+  local N = Wordle.answerCount()
+  local r = Wordle.newRandom(31337)
+  local seen, distinct = {}, 0
+  for _ = 1, N * 8 do
+    local i = r(N)
+    if not seen[i] then seen[i] = true; distinct = distinct + 1 end
+  end
+  -- 8N draws with replacement leave about N*e^-8 words unseen, well under 1%.
+  ok(distinct > N * 0.99,
+    string.format("%d of %d words reachable", distinct, N))
+
+  -- And that the draws are not piled into one end of the list.
+  local halves = { 0, 0 }
+  local r2 = Wordle.newRandom(99)
+  for _ = 1, 20000 do
+    local i = r2(N)
+    local h = i <= N / 2 and 1 or 2
+    halves[h] = halves[h] + 1
+  end
+  local ratio = halves[1] / halves[2]
+  ok(ratio > 0.9 and ratio < 1.1,
+    string.format("both halves come up about equally (%d vs %d)", halves[1], halves[2]))
+end)
+
+test("mix folds a value in without leaving the exact-integer range", function()
+  local acc = 1
+  for i = 1, 5000 do
+    acc = Wordle.mix(acc, i)
+    if acc ~= math.floor(acc) or acc < 0 or acc >= 2147483647 then
+      fail("mix left the range at step " .. i .. ": " .. tostring(acc))
+      return
+    end
+  end
+  ok(true, "5000 folds stayed a whole number below 2^31-1")
+
+  -- Different histories have to land somewhere different, or the entropy the
+  -- host accumulates is wasted.
+  local a, b = 1, 1
+  for _, v in ipairs({ 3, 1, 4, 1, 5 }) do a = Wordle.mix(a, v) end
+  for _, v in ipairs({ 3, 1, 4, 1, 6 }) do b = Wordle.mix(b, v) end
+  ok(a ~= b, "a one-value difference changes the accumulator")
+end)
+
 -- --------------------------------------------------------------- scoring --
 -- The five properties below characterise the two-pass rule exactly. Together
 -- they leave no freedom in the answer, which is why they are worth more than

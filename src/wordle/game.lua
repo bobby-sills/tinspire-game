@@ -132,6 +132,65 @@ function Wordle.score(guess, answer)
   return marks
 end
 
+-- ------------------------------------------------------------------- rng --
+
+-- The handheld will not reseed math.random.
+--
+-- `math.randomseed` exists in the sandbox and returns without complaint, but
+-- the sequence math.random then produces is the same one on every launch. The
+-- effect is a game that deals an identical word every time the document is
+-- opened -- found by playing the built .tns on real hardware, where the answer
+-- came up "fatal" every single time.
+--
+-- It stays invisible to the tests otherwise: tests/nspire_stub.lua seeds
+-- math.random itself and *then* neutralises randomseed, so a test sees a fresh
+-- value per round and the launch-to-launch repeat never shows up.
+--
+-- So the answer is drawn from a generator this module owns, seeded by the host
+-- from whatever entropy it has actually accumulated. MINSTD (Park-Miller):
+-- small, well understood, and free of bitwise operators, which Lua 5.1 on the
+-- Nspire does not have.
+local RAND_M = 2147483647
+local RAND_A = 16807
+
+-- Returns a function(n) -> 1..n, matching the shape math.random has so it can
+-- be passed straight to Wordle.new as `rand`.
+--
+-- Every product stays under 2^53 and so is exact in a double: 16807 *
+-- 2147483646 is about 3.6e13. The 1103515245 multiplier the tests use for
+-- their own fixtures would not be -- it overflows a double's exact integer
+-- range and quietly stops being the generator it looks like.
+function Wordle.newRandom(seed)
+  local s = floor(tonumber(seed) or 1) % RAND_M
+  if s <= 0 then s = 1 end
+
+  -- Small seeds start the sequence in the low corner of the range: from s = 1
+  -- MINSTD's first output is 16807, and 16807/2147483647 scaled to the list
+  -- floors to word 1 whatever the list is -- so seeds 1 through 10 all deal
+  -- the same opening word. Scramble, then warm up, so nearby seeds diverge.
+  s = (s * 48271) % RAND_M
+  if s <= 0 then s = 1 end
+  for _ = 1, 6 do s = (RAND_A * s) % RAND_M end
+
+  return function(n)
+    s = (RAND_A * s) % RAND_M
+    if not n or n < 1 then return s / RAND_M end
+    -- Taken from the top of the range rather than by a modulo: the low bits of
+    -- an LCG are its weak ones, and the answer index is the one draw in this
+    -- game that actually matters.
+    local v = floor(s / RAND_M * n) + 1
+    if v > n then v = n end
+    return v
+  end
+end
+
+-- Folds a value into an accumulating seed. The host calls this for every tick
+-- and every keypress; 31 * 2147483646 is about 6.7e13, so this too is exact.
+function Wordle.mix(acc, value)
+  local v = tonumber(value) or 0
+  return ((acc or 1) * 31 + floor(v)) % RAND_M
+end
+
 -- ------------------------------------------------------------------- game --
 
 -- Accepts whatever on.charIn hands over -- which includes "", " " and "\n"

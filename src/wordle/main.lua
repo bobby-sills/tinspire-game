@@ -62,8 +62,10 @@ local game = Wordle.new()
 local reveal   = nil  -- { row = n, t = ticks } while a row is colouring in
 local shownKb  = nil  -- keyboard state as the player is allowed to see it
 local message  = nil  -- { text, tone, t } transient line under the title
-local entropy  = 0    -- ticks idled before the first input; seeds the RNG
-local started  = false
+-- Entropy for the answer draw, folded in from every tick, key and click for
+-- as long as the document is open. It is never reset: a second round is seeded
+-- by everything the first one did.
+local entropy  = 1
 
 -- ---------------------------------------------------------------- helpers --
 
@@ -77,15 +79,24 @@ local function copyLetters()
   return out
 end
 
--- os.time() alone is a poor seed here: a handheld that has just been reset can
--- report the same value every launch, which would deal the same word every
--- game. Mixing in how long the player sat on the title screen fixes that.
-local function reseed()
-  local t = 0
-  if os and os.time then t = os.time() or 0 end
-  if os and os.clock then t = t + math.floor((os.clock() or 0) * 1000) end
-  math.randomseed(t + entropy * 7919)
-  math.random(); math.random() -- first draws after a reseed are weakly mixed
+-- Builds the generator the next round draws its answer from.
+--
+-- Note what is NOT here: math.randomseed. On the handheld it returns happily
+-- and changes nothing, so math.random replays one sequence from launch to
+-- launch and the game deals the same word every time the document is opened.
+-- That is the bug this function exists to avoid, so the entropy above is the
+-- source and Wordle.newRandom is the generator.
+--
+-- os.time() and math.random are still folded in where they work, and cost
+-- nothing where they do not -- on a handheld that has just been reset
+-- os.time() is a constant, and a constant simply contributes nothing.
+local function newRand()
+  local seed = entropy
+  if os and os.time then seed = Wordle.mix(seed, os.time() or 0) end
+  if os and os.clock then seed = Wordle.mix(seed, (os.clock() or 0) * 1000) end
+  local okay, r = pcall(math.random, 1000000)
+  if okay then seed = Wordle.mix(seed, r) end
+  return Wordle.newRandom(seed)
 end
 
 local function say(text, tone)
@@ -93,13 +104,11 @@ local function say(text, tone)
 end
 
 local function newRound()
-  reseed()
   local hard = game.hard
-  game = Wordle.new({ hard = hard })
+  game = Wordle.new({ hard = hard, rand = newRand() })
   game:start()
   reveal, message = nil, nil
   shownKb = copyLetters()
-  started = true
 end
 
 -- The largest font in FONT_STEPS whose rendering of `text` fits the box, or
@@ -535,7 +544,7 @@ local function del()
 end
 
 function on.charIn(ch)
-  if not started then entropy = entropy + 1 end
+  entropy = Wordle.mix(entropy, #ch > 0 and string.byte(ch) or 0)
 
   -- Space confirms, the way it does in the other games here. It reaches the
   -- script through on.charIn like any other character; there is no separate
@@ -559,6 +568,7 @@ function on.charIn(ch)
 end
 
 function on.enterKey()
+  entropy = Wordle.mix(entropy, 13)
   confirm()
 end
 
@@ -583,7 +593,7 @@ function on.escapeKey()
 end
 
 function on.mouseDown(x, y)
-  if not started then entropy = entropy + 1 end
+  entropy = Wordle.mix(Wordle.mix(entropy, x), y)
   for _, k in ipairs(ui.keys) do
     if x >= k.x and x < k.x + k.w and y >= k.y and y < k.y + k.h then
       if k.key == "enter" then
@@ -606,9 +616,11 @@ end
 function on.timer()
   local dirty = false
 
-  if not started then
-    entropy = entropy + 1
-  end
+  -- Every tick moves the entropy on, so how long the player spends on the
+  -- title screen -- or on the round before this one -- is what decides the
+  -- next word. This is the only source that is guaranteed to vary on a
+  -- handheld with no clock and no working reseed.
+  entropy = Wordle.mix(entropy, 1)
 
   if reveal then
     reveal.t = reveal.t + 1

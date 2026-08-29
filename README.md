@@ -601,7 +601,19 @@ Everything else here is original.
 ## What isn't verified
 
 The tests and screenshots run against a *model* of the calculator, not the
-calculator. Two things only real hardware can settle:
+calculator, and the gap is not theoretical. Wordle shipped dealing the same
+word on every launch — `math.randomseed` returns without complaint on the
+handheld and changes nothing, so `math.random` replays one sequence from one
+open of the document to the next. The mock hid it by seeding `math.random`
+itself before neutralising `randomseed`, so every test saw fresh values. It
+took playing the `.tns` on a real calculator to see it, and the fix was to stop
+using `math.random` for the answer at all.
+
+The other five games still seed the old way, so on hardware they will deal the
+same opening every launch too — the same food, the same pipes, the same tiles.
+Only Wordle has been moved off it so far.
+
+The rest of what only real hardware can settle:
 
 - **Font metrics.** The mock measures text with DejaVu; the Nspire has its own
   font. The layout code always asks the device's own `getStringWidth` at

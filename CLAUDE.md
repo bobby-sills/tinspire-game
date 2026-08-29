@@ -128,9 +128,26 @@ require string is always `"game"` regardless of the local's name.
   the result.
 - Changing colour is a call, so quantise gradients into bands instead of
   setting a new colour per element.
-- **Seed the RNG from more than `os.time()`** — it can return the same value on
-  a freshly reset handheld, dealing an identical game every launch. Mix in how
-  many idle ticks passed before the player's first input.
+- **`math.randomseed` does not take on the handheld.** It returns without
+  complaint and changes nothing, so `math.random` replays one sequence from
+  launch to launch and a game deals an identical round every time the document
+  is opened. Found by playing the built `.tns` on real hardware: Wordle's answer
+  was "fatal" every single time. `os` is not there to fall back on either.
+  So don't seed `math.random` — own the generator. `src/wordle/game.lua` has
+  `Wordle.newRandom`, a MINSTD LCG in plain arithmetic (no bitwise operators,
+  and every product under 2^53 so it stays exact in a double), seeded from
+  entropy the host folds in from every tick, key and click. Seed it from a
+  *count of timer ticks* and remember that two launches differ by only a few:
+  a raw LCG from a small seed returns a tiny first value, so seeds 1..10 all
+  pick the same word until you scramble and warm up.
+- **The mock hides this.** `tests/nspire_stub.lua` seeds `math.random` itself
+  and only then neutralises `randomseed`, so each round in a test draws a fresh
+  value and the launch-to-launch repeat never appears. To test seeding, nil out
+  `os` and pin `math.random` to a constant first — `tests/wordle/ui.lua`'s
+  `withSandbox` does exactly that, and fails on the old code.
+- The other five games still seed with `math.randomseed(os.time() + ...)` and
+  so deal the same opening every launch on hardware; only `wordle` has been
+  moved off it.
 
 ## Testing without a calculator
 

@@ -829,8 +829,23 @@ second one, and this checks the **screen** against a third — the only one of
 them that would catch a board computed correctly and drawn somewhere else, or a
 fruit painted as the wrong sprite. It reads both draw paths: on the image path
 a cell's fruit is the image drawn in it, and on the rects it is the set of
-colours filled inside the cell. The cursor, the pick-up and the hint are drawn
-as *outlines* precisely so that every fill inside a cell can be taken as fruit.
+colours filled inside the cell.
+
+Nothing but fruit is ever *filled* inside a cell — the cursor and the hint are
+outlines — and that is what lets the reader take every fill as art without
+having to subtract chrome that moves around. A test pins it by learning the
+art's own palette from the rect path, where every fill is art by definition,
+and then failing if a cascade on the image path ever puts a colour in a cell
+that is not in it. It earned its place immediately: a bursting fruit used to
+shrink over a near-white backing rect, which on a real calculator reads as a
+rendering fault rather than as a cue.
+
+The cursor is one ring, not two stacked. Picking a fruit up never moves the
+cursor off it — an arrow with something picked up performs the swap rather than
+steering — so the two are always the same cell, and the ring changes colour
+while the fruit under it lifts a couple of pixels. A test pins that premise, so
+the single ring stops being correct loudly rather than quietly if the input
+handling ever changes.
 
 Settling is judged from the repaint requests rather than the picture, and the
 reason is worth writing down: at the very start of a swap the two fruit are

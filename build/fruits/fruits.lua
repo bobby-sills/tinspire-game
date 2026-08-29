@@ -876,11 +876,11 @@ local BOARD_BG = {  34,  39,  52 }
 local CELL_A   = {  46,  52,  68 }
 local CELL_B   = {  39,  45,  60 }
 local PANEL_BG = {  22,  26,  34 }
-local FLASH    = { 255, 252, 232 }   -- backing under a fruit that is bursting
 
--- Cursor, selection and hint are drawn as OUTLINES, never fills. That is not
--- decoration: it is what lets the frame reader take every fill inside a cell as
--- fruit and never have to subtract chrome that moves around.
+-- Cursor and hint are drawn as OUTLINES, never fills. That is not decoration:
+-- it is what lets the frame reader take every fill inside a cell as fruit and
+-- never have to subtract chrome that moves around. Nothing else paints inside
+-- the board, and tests/fruits/ui.lua fails if anything starts.
 local CURSOR   = { 250, 238, 120 }
 local SELECT   = { 120, 224, 255 }
 local HINT     = { 120, 250, 160 }
@@ -1260,10 +1260,10 @@ local function drawStatic(gc)
         local k = board.cells[i]
         if k and k ~= 0 then
           if bursting and marked[i] then
-            col(gc, FLASH)
-            local inset = floor(ui.cell / 6)
-            gc:fillRect(cellX(x) + inset, cellY(y) + inset,
-                        ui.cell - inset * 2, ui.cell - inset * 2)
+            -- Shrinking, over nothing. An earlier version put a pale rect
+            -- behind a bursting fruit to say "this one is going"; at cell size
+            -- and near-white it read as a rendering fault rather than a cue,
+            -- and the shrink says it on its own.
             local off = floor((ui.cell - shrunk) / 2)
             drawFruit(gc, k, cellX(x) + off, cellY(y) + off, shrunk)
           else
@@ -1306,12 +1306,16 @@ local function outline(gc, c, x, y, inset)
               ui.cell - 1 - inset * 2, ui.cell - 1 - inset * 2)
 end
 
--- The cursor sits ON the picked-up fruit for most of a swap, so the two
--- markers share a cell and cannot share an outline: drawn at the same inset
--- the cursor simply covers the selection and "picked up" becomes invisible,
--- which is the state the player most needs to see. So the selection is a
--- double ring INSIDE the cursor's, and the fruit itself lifts a couple of
--- pixels as well -- two cues, neither of which the other can hide.
+-- One ring on the cursor's cell, not two stacked.
+--
+-- Picking a fruit up never moves the cursor off it -- `confirm` selects the
+-- cell the cursor is already on, and an arrow with something picked up
+-- performs the swap rather than steering -- so the cursor and the pick-up are
+-- always the same cell. Two rings there is two outlines describing one thing,
+-- which reads as clutter rather than as information. So the ring changes
+-- colour instead, and the fruit under it lifts a couple of pixels: one mark,
+-- two ways of telling what state it is in. tests/fruits/ui.lua pins the
+-- premise, so this stays honest if the input handling ever changes.
 local function drawMarkers(gc)
   if board.state ~= "playing" and board.state ~= "paused" then return end
 
@@ -1320,11 +1324,7 @@ local function drawMarkers(gc)
     outline(gc, HINT, h.x1, h.y1, 0)
     outline(gc, HINT, h.x2, h.y2, 0)
   end
-  if sel then
-    outline(gc, SELECT, sel.x, sel.y, 1)
-    outline(gc, SELECT, sel.x, sel.y, 2)
-  end
-  outline(gc, CURSOR, cur.x, cur.y, 0)
+  outline(gc, sel and SELECT or CURSOR, cur.x, cur.y, 0)
 end
 
 -- Drops fields rather than assume the whole line fits: a long game plus a

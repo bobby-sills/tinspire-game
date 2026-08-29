@@ -375,6 +375,102 @@ return function(t)
     eq(after.filled, 64, "and the board came back full")
   end)
 
+  test("a picked-up fruit is marked once, on the cursor's own cell", function()
+    -- The premise the single ring rests on: picking a fruit up never leaves
+    -- the cursor somewhere else, so one ring can say both things by changing
+    -- colour. If the input handling ever lets the two separate, this fails and
+    -- the ring has to go back to being two.
+    local hs = started(318, 212)
+    Frame.settle(hs)
+
+    for i = 1, 60 do
+      local f = Frame.frame(hs)
+      if f.sel then
+        if not f.cursor or f.cursor.x ~= f.sel.x or f.cursor.y ~= f.sel.y then
+          t.fail("step " .. i .. ": the pick-up and the cursor are on "
+                 .. "different cells")
+          return
+        end
+      end
+      -- Poke it about: pick up, put down, steer, click.
+      if i % 4 == 0 then hs.on.enterKey()
+      elseif i % 4 == 1 then hs.on.arrowKey(({ "up", "down", "left", "right" })[(i % 4) + 1])
+      elseif i % 4 == 2 then hs.on.charIn("5")
+      else
+        local g = Frame.frame(hs)
+        if g.colX then hs.on.mouseDown(Frame.centre(g, 1 + (i % 8), 1 + (i % 7))) end
+      end
+      Frame.settle(hs)
+    end
+    t.ok(true, "the pick-up never strayed off the cursor")
+  end)
+
+  test("nothing paints inside the board except fruit", function()
+    -- The regression this exists for: a bursting fruit used to be drawn over a
+    -- near-white backing rect, which on a real calculator reads as a rendering
+    -- fault rather than as a cue. Chrome inside a cell is exactly what the
+    -- frame reader cannot tell from art, so the rule is that there isn't any --
+    -- the cursor and the hint are outlines, and nothing else goes in a cell.
+    --
+    -- Checked by learning the art's own palette from the rect path, where
+    -- every fill IS art by definition, and then insisting that a cascade on
+    -- the image path never fills a cell with anything else.
+    local palette, seen = {}, {}
+    local realNew = t.stub.image.new
+    t.stub.image.new = function() error("no images", 2) end
+    local okay, err = pcall(function()
+      local hs = started(318, 212)
+      local distinct = 0
+      for _ = 1, 30 do
+        local f = Frame.settle(hs)
+        for _, item in ipairs(f.fruit) do
+          if item.colour then palette[item.colour] = true end
+        end
+        for i = 1, 64 do
+          local k = f.grid[i]
+          if k and not seen[k] then seen[k] = true; distinct = distinct + 1 end
+        end
+        if distinct >= 7 then return distinct end
+        if not Frame.step(hs) then return distinct end
+      end
+      return distinct
+    end)
+    t.stub.image.new = realNew
+    ok(okay, "learned the palette: " .. tostring(err))
+    eq(err, 7, "saw every fruit, so the palette is complete")
+
+    local n = 0
+    for _ in pairs(palette) do n = n + 1 end
+    ok(n >= 20, "and it has a real number of colours in it (" .. n .. ")")
+
+    -- Now a cascade with images on, watching every frame.
+    local hs = started(318, 212)
+    local checked, bursts = 0, 0
+    for move = 1, 10 do
+      local f = Frame.settle(hs)
+      local swaps = Frame.legalSwaps(f)
+      if #swaps == 0 then break end
+      local sw = swaps[1 + (move % #swaps)]
+      hs.on.mouseDown(Frame.centre(f, sw[1], sw[2]))
+      hs.on.mouseDown(Frame.centre(f, sw[3], sw[4]))
+      for _ = 1, 300 do
+        local g = Frame.frame(hs)
+        if g.fills > 0 then bursts = bursts + 1 end
+        for _, item in ipairs(g.fruit) do
+          if item.colour and not palette[item.colour] then
+            t.fail("move " .. move .. ": a cell was filled with "
+                   .. item.colour .. ", which is not in the art's palette")
+            return
+          end
+          checked = checked + 1
+        end
+        if not Frame.tick(hs) then break end
+      end
+    end
+    ok(bursts > 0, "saw fruit actually bursting (" .. bursts .. " frames)")
+    ok(checked > 1000, "and checked a lot of fills (" .. checked .. ")")
+  end)
+
   test("the hint marks a swap that really is legal", function()
     local hs = started(318, 212)
     local f = Frame.settle(hs)

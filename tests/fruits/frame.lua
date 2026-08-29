@@ -25,7 +25,6 @@ M.CELL_B = key({  39,  45,  60 })
 M.PANEL  = key({  22,  26,  34 })
 M.HUD    = key({  26,  30,  40 })
 M.PAGE   = key({  14,  16,  22 })
-M.FLASH  = key({ 255, 252, 232 })
 M.CURSOR = key({ 250, 238, 120 })
 M.SELECT = key({ 120, 224, 255 })
 M.HINT   = key({ 120, 250, 160 })
@@ -33,7 +32,7 @@ M.HINT   = key({ 120, 250, 160 })
 -- Fills that are furniture rather than fruit.
 local CHROME = {
   [M.BOARD] = true, [M.CELL_A] = true, [M.CELL_B] = true,
-  [M.PANEL] = true, [M.HUD] = true, [M.PAGE] = true, [M.FLASH] = true,
+  [M.PANEL] = true, [M.HUD] = true, [M.PAGE] = true,
 }
 
 local function sortedKeys(set)
@@ -52,7 +51,8 @@ end
 --   text               every string drawn, in order
 function M.read(ops)
   local f = { cells = {}, grid = {}, text = {}, strings = {},
-              fruit = {}, panel = false, images = false, flash = 0 }
+              fruit = {}, panel = false, images = false,
+              fills = 0, blits = 0 }
 
   local outlines = {}
 
@@ -65,8 +65,6 @@ function M.read(ops)
         f.board = f.board or o
       elseif k == M.PANEL then
         f.panel = true
-      elseif k == M.FLASH then
-        f.flash = f.flash + 1
       elseif not CHROME[k] then
         f.fruit[#f.fruit + 1] = { op = o, colour = k }
       end
@@ -117,9 +115,11 @@ function M.read(ops)
         f.settled = false
       end
       if item.id then
+        f.blits = f.blits + 1
         if f.grid[i] and f.grid[i] ~= item.id then f.settled = false end
         f.grid[i] = item.id
       else
+        f.fills = f.fills + 1
         sig[i] = sig[i] or {}
         sig[i][item.colour] = true
       end
@@ -139,14 +139,23 @@ function M.read(ops)
   end
   f.filled = full
   if full ~= f.cols * f.rows then f.settled = false end
-  if f.flash > 0 then f.settled = false end   -- something is bursting
 
+  -- A fruit shrinking as it bursts is too small for a native sprite, so it
+  -- arrives as rects while everything settled around it is still one blit.
+  -- Loose fills on a frame that is otherwise using images therefore mean a
+  -- clear is on screen. (On the rect-only fallback there is nothing to
+  -- contrast against, so this cannot tell -- which costs nothing, because
+  -- M.settle waits on repaint requests rather than on this flag.)
+  if f.images and f.fills > 0 then f.settled = false end
+
+  -- The cursor is ONE ring whose colour says whether a fruit is picked up, so
+  -- a selection is also a cursor position.
   for _, o in ipairs(outlines) do
     local gx, gy = cellOf(o.op.x + 1, o.op.y + 1)
     if gx then
       local at = { x = gx, y = gy }
       if o.colour == M.CURSOR then f.cursor = at
-      elseif o.colour == M.SELECT then f.sel = at
+      elseif o.colour == M.SELECT then f.sel, f.cursor = at, at
       elseif o.colour == M.HINT then
         f.hint = f.hint or {}
         f.hint[#f.hint + 1] = at

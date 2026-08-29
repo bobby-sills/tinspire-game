@@ -1,12 +1,13 @@
-# Snake, Flappy Bird, 2048, Connect Four, Chess, Wordle and Klondike for the TI-Nspire CX II
+# Snake, Flappy Bird, 2048, Connect Four, Chess, Wordle, Klondike and Slide for the TI-Nspire CX II
 
-Seven games written in TI-Nspire Lua. They install by drag-and-drop — no
+Eight games written in TI-Nspire Lua. They install by drag-and-drop — no
 Ndless, no jailbreak, no root.
 
 **Grab [`Snake.tns`](Snake.tns), [`Flappy.tns`](Flappy.tns),
 [`2048.tns`](2048.tns), [`Connect4.tns`](Connect4.tns),
-[`Chess.tns`](Chess.tns), [`Wordle.tns`](Wordle.tns) or
-[`Klondike.tns`](Klondike.tns) and copy it onto your calculator.**
+[`Chess.tns`](Chess.tns), [`Wordle.tns`](Wordle.tns),
+[`Klondike.tns`](Klondike.tns) or [`Slide.tns`](Slide.tns) and copy it onto
+your calculator.**
 
 ## Snake
 
@@ -566,6 +567,125 @@ observation.
 The screenshots above are that solver playing through the real UI, clicks and
 all — including the win, which is a deal it actually solved.
 
+## Slide
+
+The 15-puzzle: numbered tiles and one gap, to be pushed back into order.
+
+![Title screen](docs/screenshots/slide-title.png)
+![In play](docs/screenshots/slide-playing.png)
+
+| Key | Action |
+| --- | --- |
+| Arrows | Slide the tile in that direction into the gap |
+| Digits | Move the tile with that number |
+| `enter` | Start, resume, commit a half-typed number, deal a new puzzle |
+| `esc` or `P` | Pause; clears a half-typed number first |
+| `U` or `backspace` | Undo — unlimited, all the way back to the deal |
+| `R` | New puzzle at the same size |
+| `S` | Change size: 3x3, 4x4, 5x5 |
+| `I` | Invert the arrow convention |
+| `H` | Hint — plays one move toward a solution |
+| Click | Slide the clicked tile, and any run of tiles between it and the gap |
+
+A tile that is already in its final position is drawn green, which costs one
+comparison per tile and turns "am I getting anywhere?" into something you can
+see at a glance.
+
+### The scramble is the whole game
+
+Exactly half of all permutations of a sliding puzzle cannot be reached from the
+solved state. Shuffle by permuting the tiles at random and half the puzzles you
+deal are impossible — and the player has no way to tell an impossible board
+from a hard one. They just lose to the generator after ten minutes of honest
+work.
+
+So the scramble never permutes anything. It starts from the solved board and
+makes a few hundred random *legal moves*, which makes an unsolvable board
+unrepresentable rather than merely detected — the same reason Flappy's pipe
+generator is fenced by the physics instead of filtered afterwards. The walk
+never immediately retraces its last step, or it would spend half its time
+wandering back toward solved.
+
+A random walk can still land somewhere easy by chance, so a deal is rejected
+and re-walked if it is too close to solved. The floors are a minimum count of
+misplaced tiles and a minimum sum of Manhattan distances, both set at the 5th
+percentile of what a walk of that length actually produces — measured, not
+guessed, so rejection is rare and does not bias what is left.
+
+`Puzzle.isSolvable` then implements the inversion-parity rule anyway, and
+nothing in the game ever calls it. It exists so that two independent mechanisms
+have to agree: count the inversions reading row by row and ignoring the gap,
+and on an odd-width board the position is solvable iff that count is even,
+while on 4x4 it is solvable iff inversions plus the gap's row counted from the
+bottom is odd. That formula is easy to get subtly backwards, and a backwards
+oracle agreeing with a backwards shuffler would prove nothing — so the tests
+pin it first against boards whose solvability follows from how they were built
+(the solved board, a single transposition, Sam Loyd's 14-15 puzzle) before
+letting it judge anything.
+
+The invariant that catches the subtler bug is the third one: **a legal move
+never changes solvability.** Thousands of random slides at every size, with the
+oracle re-run after every single one. A move implementation that quietly
+corrupts the board fails there and nowhere else.
+
+### Arrows, digits and clicks
+
+The arrow convention has to be stated, because the two readings are exact
+opposites and the wrong one feels broken rather than merely unfamiliar. Here an
+arrow names the direction **the tile** travels: pressing Left slides the tile
+sitting to the right of the gap leftwards into it, so the gap moves right.
+`I` swaps it for the other reading, since preferences genuinely differ, and
+whichever is in force is written under the board.
+
+Digits are the fast way to play — this is a calculator, the number pad is right
+there, and it beats arrows comfortably. On 4x4 and 5x5 a tile number may be two
+digits, so a digit is committed the moment no longer tile number begins with
+what has been typed: on 4x4 there is nothing above 15, so `2` is unambiguous
+and moves at once, while `1` waits for a second digit, for `enter`, or for a
+short timeout. What is pending is shown under the board rather than left to
+look like a dropped keypress.
+
+Clicking a tile in line with the gap but not next to it slides the whole run of
+tiles between them, which is what this puzzle has always done and what people
+reach for without being told. A single-step move is just the one-tile case of
+the same operation, which is also why undo is unlimited and costs nothing: the
+inverse of a run slide is the same run slide back the other way, so one gap
+position is the entire undo record — no snapshot per move.
+
+![Mid-slide](docs/screenshots/slide-sliding.png)
+![The 5x5](docs/screenshots/slide-big.png)
+
+Board size is the difficulty setting, and the rules are size-generic, so it
+costs almost nothing. The tile numbers are sized from the *widest* label on the
+board rather than each from its own, because fitting `1` and `24` independently
+would set them at different sizes and the grid would come out visibly ragged —
+the same trap Wordle's keyboard hits with `I` and `W`.
+
+Like 2048, it runs no game loop: the screen repaints when you press a key and
+not otherwise. The timer slides tiles, ticks the clock, and feeds the hint.
+
+### The hint, and what it costs
+
+![Searching](docs/screenshots/slide-hinting.png)
+![Solved](docs/screenshots/slide-solved.png)
+
+`H` plays one move toward a solution. Solving this puzzle *well* means IDA\*
+with Manhattan distance plus linear conflict, which is expensive, so it is a
+sliced state machine budgeted across timer ticks exactly like Connect Four's
+`ai:think()` — running it to completion inside one `on.timer()` would freeze
+the screen and queue up keypresses, which a player reads as a crash. Slicing
+changes only *when* it answers, never *what*, and a test asserts that: fed 17
+nodes at a time it returns the identical path to the same search run straight
+through.
+
+Optimal is expensive, and the honest consequence is that a freshly dealt 4x4
+needs a solution around 50 moves long and will not be solved inside any budget
+a handheld can spend. So the hint says **"No solution found in budget"** rather
+than returning a move it cannot justify. It does finish on 3x3 — the win
+screenshot above is a 3x3 played out entirely by the hint, through the real UI
+— and on 4x4 endgames. 5x5 is refused outright, because optimal search at that
+size is hopeless and pretending otherwise would just burn ticks.
+
 ## Installing
 
 1. Connect the calculator over USB. On a Mac the easiest route is
@@ -574,8 +694,8 @@ all — including the win, which is a deal it actually solved.
    will fail in a way that looks like a hardware fault. TI-Nspire Student or
    Teacher Software works too.
 2. Drag `Snake.tns`, `Flappy.tns`, `2048.tns`, `Connect4.tns`, `Chess.tns`,
-   `Wordle.tns` or `Klondike.tns` into the calculator's file list. They must land in **My Documents** directly, not a
-   subfolder.
+   `Wordle.tns`, `Klondike.tns` or `Slide.tns` into the calculator's file list.
+   They must land in **My Documents** directly, not a subfolder.
 3. On the handheld, open **My Documents**, pick one, and press `enter`.
 
 There is nothing else to install. Each `.tns` is a normal TI-Nspire document
@@ -597,6 +717,7 @@ make GAME=connect4             # build Connect4.tns
 make GAME=chess                # build Chess.tns
 make GAME=wordle               # build Wordle.tns
 make GAME=klondike             # build Klondike.tns
+make GAME=slide                # build Slide.tns
 make GAME=flappy test          # that game's logic + runtime tests
 make GAME=flappy screenshots   # preview PNGs -> build/flappy/screenshots
 make all-games                 # build everything under src/
@@ -763,9 +884,11 @@ itself before neutralising `randomseed`, so every test saw fresh values. It
 took playing the `.tns` on a real calculator to see it, and the fix was to stop
 using `math.random` for the answer at all.
 
-The other five games still seed the old way, so on hardware they will deal the
-same opening every launch too — the same food, the same pipes, the same tiles.
-Only Wordle has been moved off it so far.
+Slide was written after that and owns its generator from the start, for the
+same reason: a puzzle that deals the identical scramble every time the document
+is opened is the same bug wearing different clothes. The remaining six games
+still seed the old way, so on hardware they will deal the same opening every
+launch — the same food, the same pipes, the same tiles.
 
 The rest of what only real hardware can settle:
 
@@ -775,8 +898,8 @@ The rest of what only real hardware can settle:
   title rather than letting a long score collide with it. But the preview
   images are representative, not exact.
 - **Bot speed.** How many search nodes a second the handheld manages is the
-  one number in Connect Four and Chess that is an estimate rather than a
-  measurement —
+  one number in Connect Four, Chess and Slide's hint that is an estimate rather
+  than a measurement —
   the container the tests run on is an x86 desktop. The design does not depend
   on getting it right: the bot's turn is capped in *ticks*, and iterative
   deepening means a slower machine simply plays a shallower search rather than
@@ -789,8 +912,8 @@ The rest of what only real hardware can settle:
   they run proportionally slower — they won't misbehave, but Snake's top speeds
   may not be reachable, and Flappy will feel heavier than intended. 2048 is
   unaffected: it is turn-based, and a coarse timer only makes its slide
-  animation longer, and Connect Four and Chess only spend longer on the bot's
-  turn.
+  animation longer, and Connect Four, Chess and Slide's hint only spend longer
+  on their search.
 - **Whether `fillRect` is fast enough for the pieces.** A full board is ~940
   rects per repaint. On this container that is imperceptible, and chess only
   repaints when you press a key, but the handheld is the one that has to draw

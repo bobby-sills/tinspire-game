@@ -13,10 +13,12 @@ timer used only for the slide animation), `connect4` (turn-based, plus a
 search that has to be sliced across timer ticks), `chess` (the same, with
 rules complicated enough that verifying them is most of the work), `wordle`
 (text input rather than steering, bulk data baked into the bundle, and a rule
-whose correctness is the whole job) and `klondike` (hidden state, unlimited
-undo, and a layout that has to adapt at paint time to how much it is asked to
-show). Between them they cover the shapes a new game is likely to take — read
-whichever is closest to what you're building.
+whose correctness is the whole job), `klondike` (hidden state, unlimited undo,
+and a layout that has to adapt at paint time to how much it is asked to show)
+and `slide` (a generator that has to make illegal states unrepresentable, plus
+an independent oracle for the tests to check it against). Between them they
+cover the shapes a new game is likely to take — read whichever is closest to
+what you're building.
 
 ## Commands
 
@@ -107,6 +109,21 @@ require string is always `"game"` regardless of the local's name.
   state, hidden parts included. `tests/chess/run.lua` and
   `tests/klondike/run.lua` both do this, and it is the highest-value test in
   either file.
+- **If half the states a generator can produce are broken, don't filter them
+  out -- make them unrepresentable.** Exactly half of all permutations of a
+  sliding puzzle cannot be reached from the solved state, and the player cannot
+  tell an impossible board from a hard one, so they lose to the generator with
+  nothing on screen to say so. `src/slide/game.lua` never permutes anything: it
+  walks random *legal moves* out of the solved position, which is the same
+  reason Flappy's pipes are fenced by the physics rather than filtered
+  afterwards. Then implement the check you decided not to need anyway, purely
+  as a test oracle -- `Puzzle.isSolvable` counts inversions and nothing in the
+  game ever calls it -- so that two mechanisms sharing no code have to agree.
+  Pin the oracle first against cases whose answer follows from how they were
+  built, because a backwards oracle agreeing with a backwards generator proves
+  nothing. The invariant worth the most here is the third one: assert that a
+  legal *move* never changes solvability, over thousands of them. That is what
+  catches a move implementation quietly corrupting the board.
 - **Anything long-running gets a copy of the state, not the live one.** A
   suspended search is suspended mid-mutation; if it shares the board with the
   renderer, `on.paint` draws its half-explored guesses. Connect Four hit this
@@ -173,9 +190,11 @@ require string is always `"game"` regardless of the local's name.
   value and the launch-to-launch repeat never appears. To test seeding, nil out
   `os` and pin `math.random` to a constant first — `tests/wordle/ui.lua`'s
   `withSandbox` does exactly that, and fails on the old code.
-- The other five games still seed with `math.randomseed(os.time() + ...)` and
-  so deal the same opening every launch on hardware; only `wordle` has been
-  moved off it.
+- `slide` owns its generator the same way and for the same reason: a puzzle
+  that deals the identical scramble at every launch is that bug wearing
+  different clothes. The other six games still seed with
+  `math.randomseed(os.time() + ...)` and so deal the same opening every launch
+  on hardware.
 
 ## Testing without a calculator
 

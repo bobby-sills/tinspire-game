@@ -1,13 +1,13 @@
-# Snake, Flappy Bird, 2048, Connect Four, Chess, Wordle, Klondike and Slide for the TI-Nspire CX II
+# Snake, Flappy Bird, 2048, Connect Four, Chess, Wordle, Klondike, Slide and Fruits for the TI-Nspire CX II
 
-Eight games written in TI-Nspire Lua. They install by drag-and-drop — no
+Nine games written in TI-Nspire Lua. They install by drag-and-drop — no
 Ndless, no jailbreak, no root.
 
 **Grab [`Snake.tns`](Snake.tns), [`Flappy.tns`](Flappy.tns),
 [`2048.tns`](2048.tns), [`Connect4.tns`](Connect4.tns),
 [`Chess.tns`](Chess.tns), [`Wordle.tns`](Wordle.tns),
-[`Klondike.tns`](Klondike.tns) or [`Slide.tns`](Slide.tns) and copy it onto
-your calculator.**
+[`Klondike.tns`](Klondike.tns), [`Slide.tns`](Slide.tns) or
+[`Fruits.tns`](Fruits.tns) and copy it onto your calculator.**
 
 ## Snake
 
@@ -682,6 +682,295 @@ screenshot above is a 3x3 played out entirely by the hint, through the real UI
 — and on 4x4 endgames. 5x5 is refused outright, because optimal search at that
 size is hopeless and pretending otherwise would just burn ticks.
 
+## Fruits
+
+Match three. Swap two neighbouring fruit to line up three or more, they clear,
+the ones above fall in, and whatever lands may line up again.
+
+![Title screen](docs/screenshots/fruits-title.png)
+![In play](docs/screenshots/fruits-playing.png)
+
+| Key | Action |
+| --- | --- |
+| Arrows, or `2`/`4`/`6`/`8` | Move the cursor |
+| `enter` or space | Pick a fruit up, or put it down |
+| Arrow, with a fruit picked up | Swap it that way — one keypress, no confirm |
+| `esc` or `P` | Pause |
+| `H` | Hint — lights a swap that works, for 20 points |
+| `R` | New board |
+| Click | Pick up; click a neighbour to swap with it |
+
+A clear is worth 10 a fruit, plus 20 for each one past the third, times a
+multiplier that grows down the cascade: x1, x2, x3, x5, x8, x12. Clearing fruit
+also fills the level bar, and each level asks for more than the last and pays a
+bonus for reaching it — the level measures how much board you have got through,
+the score measures how well, and points per fruit deliberately do *not* scale
+with the level so a clear has one value rather than two multiplied together.
+
+Sit still for about five seconds and the game lights a legal swap for you,
+free. `H` is the same thing asked for deliberately, and that one costs 20 —
+a player who has stopped moving has usually stopped *seeing*, and charging them
+for a prompt they did not ask for would be a strange thing to do.
+
+The round ends when no swap anywhere on the board would do anything.
+
+The swap-by-arrow is the route that actually gets used, so it is one keypress:
+pick a fruit up with `enter`, then press the direction you want it to go. The
+alternative — steer to the second cell and confirm — is three keys for the same
+move, and on a handheld with no key-repeat worth having, that is the difference
+between playing and typing.
+
+### The board must never be unplayable, and must never play itself
+
+Deal an 8x8 board at random and it will regularly detonate into a cascade
+before the player has touched it: about four boards in five drawn uniformly
+already contain a run. Dealing and rerolling would work. Instead the board is
+filled cell by cell, left to right and top to bottom, **excluding any fruit
+that would complete a run with the two cells to its left or the two above** —
+which are the only runs such a fill can complete. That excludes at most two
+kinds out of seven, so the fill can never paint itself into a corner and need a
+restart. An already-matching board is not rejected; it is unrepresentable, the
+same way `src/slide/game.lua` makes an unsolvable puzzle unrepresentable by
+walking legal moves instead of permuting tiles.
+
+A fresh board also has to have at least one legal swap, or the player opens
+onto a dead board with nothing on screen to say why. That one is resampled
+rather than designed away — measured over 200,000 deals here, no deal has ever
+needed a second try — and if a degenerate generator ever exhausted the retries
+there is a deterministic fill behind it that the tests pin as playable.
+
+`Fruit.scanRuns` and `Fruit.allLegalSwaps` then implement both checks that were
+designed away — a naive run scanner and a brute force that tries every swap and
+rescans the whole board — and **nothing in the game ever calls either**. They
+exist so two mechanisms sharing no code have to agree, and the tests pin them
+first against boards whose answer follows from how they were built, because a
+backwards oracle agreeing with a backwards generator proves nothing. A test
+reads `src/fruits/game.lua` and fails if the game ever starts calling them.
+
+**The trap is right next door, and it is the opposite one.** Fruit falling in
+after a clear *are* allowed to match — that is what a cascade is. Apply the
+no-match fill there too and every test above still passes while cascades
+quietly leave the game. So the tests assert both directions: a fresh deal never
+matches, and the mid-cascade refill sometimes does.
+
+### Specials
+
+![Power fruit, with the level bar filling](docs/screenshots/fruits-playing.png)
+
+Following Bejeweled 2, which is where most people's expectations of a
+match-three come from:
+
+- **four in a line, or an L / T / +**, merges into a **power fruit**. It keeps
+  its colour and matches like anything else, but when it clears it takes the
+  eight cells around it, and a blast that catches another power fruit sets that
+  one off too, so they chain.
+- **five or more in a line** merges into a **rainbow**, drawn as a cut
+  dragonfruit because pale is the one thing none of the seven playable fruits
+  is. It has no colour and can never be matched. Swap it with a neighbour and
+  it is *spent*: every fruit of that neighbour's kind leaves the board. Two
+  rainbows swapped together clear everything, which is the only sensible
+  reading of "all of the other one's colour" when the other one has no colour.
+
+The distinction worth stating because it is easy to get backwards: **five cells
+in an L is a power fruit, not a rainbow.** A rainbow needs five in one straight
+run. So the decision is made per run and per cluster of overlapping runs, which
+is why the matcher keeps the runs it found and not only the cells it marked.
+
+Two consequences fall out of the rainbow, and both reach further than the
+drawing code:
+
+**It changes what "no legal swap" means.** A rainbow is spent rather than
+matched, so a swap touching one always does something and is therefore always
+legal — which means a board holding a rainbow essentially never deadlocks. Both
+the production move-finder and the brute-force oracle carry that clause, and so
+does the frame reader, which learns which sprites are ordinary by looking at
+*fresh* boards — they hold no specials by construction, so anything seen later
+and not in that set is one. Without that the reader's idea of "no moves left"
+quietly stops being the game's, and a board carrying a rainbow reads as
+deadlocked while the game plays happily on.
+
+**It changes what a cell can hold.** A cell is now 1..7, or the rainbow; a
+power fruit is a flag alongside, because it keeps its colour. That is a
+deliberate split rather than two flags: the rainbow is a *kind* precisely so
+that it equals no ordinary fruit, and every run scanner here compares cells for
+equality, so a rainbow can never join a run without anyone writing a special
+case for it.
+
+A power fruit is marked by making **the fruit itself throb** — swelling and
+shrinking a couple of pixels — behind a white outline of its own silhouette.
+An earlier attempt drew a ring around the cell instead; a ring is a box near a
+fruit, and this is the fruit, which is what the player is looking at anyway.
+
+`gc:drawImage` cannot scale, so a fruit that throbs cannot use the one-call
+image path except at exactly its native size — it goes through the rects,
+which is the second reason that encoding earns its place. About 73 rects for
+the fruit and 23 for the outline against one `drawImage`, and the throb passes
+through its native size once a cycle, where it is a single blit again. The
+outline is generated by `tools/fruitart.py` from the sprite's own alpha and
+scaled by exactly the same arithmetic as the fruit, so the two stay registered
+at every size.
+
+The outline is also the *one* thing besides fruit that is ever filled inside a
+cell. The frame reader knows that exact colour and treats it as chrome; every
+other stray colour in a cell still fails the test that guards the rule.
+
+Animating a *settled* board is the one thing here that costs what a still board
+never used to, so it is gated twice: the throb repaints only when it actually
+changes step — once every three ticks, not every tick — and only while there is
+a power fruit on the board to throb. With none, a settled board still repaints
+exactly never, and a test asserts it.
+
+Two things in the harness had to change for it, and both were improvements.
+`tests/fruits/frame.lua` used to decide the board had settled by watching the
+repaint requests dry up, which a board that throbs forever never does; it now
+watches the *fruit* stop moving, which is what "settled" always meant. And it
+now keys colours at the handheld's own depth of five bits a channel rather than
+eight — because a sprite that has been through `TI.Image` comes back 15-bit
+while the same sprite drawn as rects carries the original palette, so at eight
+bits one throbbing fruit read as a different fruit from its own plain twins.
+
+Gravity had to learn about them too — a power fruit that falls has to arrive
+still being one, or it hands its blast to whatever landed underneath — and the
+refill never hands out a special, because a special is something the player
+earned from a match.
+
+### The cascade is a state machine, not a loop
+
+![Mid-cascade](docs/screenshots/fruits-cascade.png)
+
+Clear, drop, refill, rematch, repeat — and every step has to be *seen*. There
+are no threads on this device and no way to yield, so running the cascade as a
+loop inside one `on.timer()` would freeze the screen and queue up keypresses,
+which a player reads as a crash. It is an explicit machine instead —
+`idle → swap → clear → fall → clear → … → idle` — that the timer advances one
+phase per few ticks, living in `game.lua` so the tests can drive it straight
+through, exactly like Connect Four's sliced search.
+
+An illegal swap is one of its states: `swap → unswap → idle`, so the two fruit
+visibly trade places and come back. Silently refusing leaves the player unsure
+the key even registered.
+
+The clear phase has an order that each step depends on: the cells that *merge*
+into a special come out of the marks first, so a special never destroys itself;
+then power fruit go off, to a fixpoint, because one blast can set off another;
+only then is the total scored, which is what makes a chained blast worth what
+it actually cleared.
+
+The work of a phase happens as it is *left*, so while a phase is on screen the
+board holds exactly what that phase is meant to show — during `clear` the
+matched fruit are still there and marked; during `fall` the board already holds
+the settled result and a motion record says where everything came from.
+
+The test that matters is that **resolving a cascade one tick at a time reaches
+the identical board and the identical score as resolving it in a single call.**
+`Fruit:tick` contains no game logic at all — it only decides when `advance()`
+is called — and that test fails the moment someone moves a rule up into it.
+
+### Drawing 64 sprites twenty times a second
+
+![A fruit picked up, with the hint lit](docs/screenshots/fruits-selected.png)
+
+Chess and Klondike draw their art as `fillRect` runs because the byte layout
+`image.new` wants is documented only by TI, and a wrong guess paints nothing
+with no error to chase. That is still true — but it is now *known*, because it
+was measured on a real calculator rather than guessed at.
+
+`tools/probe/imageprobe.lua` tried twelve plausible header layouts and three
+call signatures. None painted. The format is in fact documented on the
+[Inspired-Lua wiki](https://wiki.inspired-lua.org/index.php?title=TI.Image):
+a **20-byte little-endian header** — width, height, alignment, flags, padding,
+row stride, bits per pixel, planes — followed by 16-bit pixels laid out
+`A RRRRR GGGGG BBBBB`, **RGB555 with alpha in the top bit**, where 0 means the
+pixel is not drawn. The first probe had guessed a 16-byte header and RGB565;
+either mistake alone is fatal. `tools/probe/imageprobe2.lua` then confirmed all
+of it on a CX II, including that a deliberately wrong stride is rejected with
+*"image header mismatch"* rather than silently painting nothing, and that
+clearing the alpha bit really does make a pixel transparent.
+
+So a board is **64 `drawImage` calls** rather than the ~4100 rects the same
+pixels cost as rectangles, which matters here in a way it does not for chess:
+chess repaints on a key press, and this repaints on every tick of a cascade.
+The busiest frame a cascade produces measures 618 draw calls, against a
+1400 ceiling the tests enforce.
+
+The rects are still generated, and they are not a lesser picture — the sheet
+uses four to seven colours a sprite, so nothing is quantised and the two
+encodings are the same pixels. They cover the two cases `drawImage` cannot: a
+cell too small for a native 16-pixel sprite, which is any window much below the
+handheld's, and an OS that will not take the string form of `image.new`. That
+fallback is all-or-nothing — half a board in each encoding would look like a
+bug — and the tests exercise it by making `image.new` fail, then assert the two
+paths paint the identical board.
+
+`tools/fruitart.py` rebuilds both encodings from exactly the characters it
+wrote, compares each against the source pixels, and compares the two against
+each other. A sprite that would draw wrong on the handheld is a build failure
+here instead of a surprise on the calculator.
+
+The seven fruit are chosen to differ by **silhouette** and not only by colour —
+a round one, a crescent, a big loose cluster, a wedge, a teardrop, a triangle
+and a small tight cluster. The near-misses were left out deliberately: cherry
+and strawberry are the apple's red, pineapple and lemon are the banana's
+yellow, and a whole orange is the apple's circle again, which is why the orange
+here is a cut slice. Seven rather than more because an 8x8 board with more
+colours than that makes runs rare and deadlock quick.
+
+### Reading the board back off the screen
+
+![No moves left](docs/screenshots/fruits-gameover.png)
+
+`tests/fruits/frame.lua` recovers the board from the paint calls and works out
+the runs and the legal swaps for itself. That is a *third* implementation:
+`game.lua` has the rules, `game.lua`'s oracles check those rules against a
+second one, and this checks the **screen** against a third — the only one of
+them that would catch a board computed correctly and drawn somewhere else, or a
+fruit painted as the wrong sprite. It reads both draw paths: on the image path
+a cell's fruit is the image drawn in it, and on the rects it is the set of
+colours filled inside the cell.
+
+Nothing but fruit is ever *filled* inside a cell — the cursor and the hint are
+outlines — and that is what lets the reader take every fill as art without
+having to subtract chrome that moves around. A test pins it by learning the
+art's own palette from the rect path, where every fill is art by definition,
+and then failing if a cascade on the image path ever puts a colour in a cell
+that is not in it. It earned its place immediately: a bursting fruit used to
+shrink over a near-white backing rect, which on a real calculator reads as a
+rendering fault rather than as a cue.
+
+The cursor is one ring, not two stacked. Picking a fruit up never moves the
+cursor off it — an arrow with something picked up performs the swap rather than
+steering — so the two are always the same cell, and the ring changes colour
+while the fruit under it lifts a couple of pixels. A test pins that premise, so
+the single ring stops being correct loudly rather than quietly if the input
+handling ever changes.
+
+Settling is judged from the repaint requests rather than the picture, and the
+reason is worth writing down: at the very start of a swap the two fruit are
+drawn at each other's cells, so all sixty-four cells hold exactly one fruit and
+the board looks perfectly settled while a swap is in fact under way.
+
+### The board that was the same every time
+
+Like Slide, Fruits owns its random number generator instead of seeding
+`math.random`, which does nothing on the handheld. That was not enough, and the
+way the gap was found is worth recording.
+
+The board behind the title screen is dealt when the document loads — at which
+point the only entropy that exists is the generator's initial seed. Pressing
+`enter` started the round without dealing a new one, so **every launch played
+the identical board**: Wordle's bug in a different coat. The round is now dealt
+at the moment play starts, seeded from how long the player sat on the title
+screen, which on a handheld with no clock worth reading is the only thing that
+differs between two launches.
+
+The test that should have caught it had been passing all along, for the wrong
+reason. It compared boards by the identity of the sprites drawn in each cell,
+and the mock handed out image handles from a counter that ran for the life of
+the process rather than restarting per document — so two launches of the *same*
+board produced different handles and looked different. Fixing the mock to
+number images per document, which is what the calculator does, turned a test
+that could not fail into one that did.
+
 ## Installing
 
 1. Connect the calculator over USB. On a Mac the easiest route is
@@ -690,7 +979,8 @@ size is hopeless and pretending otherwise would just burn ticks.
    will fail in a way that looks like a hardware fault. TI-Nspire Student or
    Teacher Software works too.
 2. Drag `Snake.tns`, `Flappy.tns`, `2048.tns`, `Connect4.tns`, `Chess.tns`,
-   `Wordle.tns`, `Klondike.tns` or `Slide.tns` into the calculator's file list.
+   `Wordle.tns`, `Klondike.tns`, `Slide.tns` or `Fruits.tns` into the
+   calculator's file list.
    They must land in **My Documents** directly, not a subfolder.
 3. On the handheld, open **My Documents**, pick one, and press `enter`.
 
@@ -714,10 +1004,12 @@ make GAME=chess                # build Chess.tns
 make GAME=wordle               # build Wordle.tns
 make GAME=klondike             # build Klondike.tns
 make GAME=slide                # build Slide.tns
+make GAME=fruits               # build Fruits.tns
 make GAME=flappy test          # that game's logic + runtime tests
 make GAME=flappy screenshots   # preview PNGs -> build/flappy/screenshots
 make all-games                 # build everything under src/
 make list                      # list games
+make probes                    # throwaway .tns that ask real hardware a question
 make clean
 ```
 
@@ -750,7 +1042,9 @@ tests/run_ui.lua          shared: game-agnostic runtime tests
 tools/                    shared: bundler, frame capture, PNG renderer
 tools/sprites.py          chess only: piece art -> Lua run-length spans
 tools/cardart.py          klondike only: card art -> Lua run-length spans
+tools/fruitart.py         fruits only: sprites -> TI.Image strings and rects
 tools/wordlist.py         wordle only: word lists -> a Lua string to search
+tools/probe/              throwaway documents that ask real hardware a question
 build/<game>/<game>.lua   generated: the script that goes into the .tns
 <Game>.tns                generated: the file you copy to the calculator
 ```
@@ -825,6 +1119,16 @@ ignores a malformed drawing call silently, which on hardware shows up as "the
 screen looks wrong" with nothing to debug — the mock turns that into a failing
 test instead. Each game adds its own frame assertions in `tests/<game>/ui.lua`.
 
+Fruits is checked against three implementations of its own rules, not two.
+`game.lua` has the matcher and the move finder; `Fruit.scanRuns` and
+`Fruit.allLegalSwaps` are naive from-the-definition versions that the game
+never calls, and a test reads the source and fails if it ever starts; and
+`tests/fruits/frame.lua` works the runs and the swaps out a third time from
+the *painted frame*, which is the only one of them that would catch a board
+computed correctly and drawn somewhere else. Its headline test is that
+resolving a cascade one tick at a time reaches the identical board and score
+as resolving it in a single call.
+
 **`make GAME=<game> screenshots`** — plays the game through the mock and
 rasterizes real frames to PNG at the handheld's true 318x212, so you can see a
 layout change without leaving the terminal. The simulated player reads the
@@ -867,6 +1171,14 @@ The answer list came from the original Wordle's JavaScript bundle and carries
 rather than pretending otherwise. Swapping in a different list is one file and
 one command.
 
+Fruits' sprites are a **CC0** sheet supplied by the repository owner — public
+domain, so no attribution is required and none is owed. The author's name and
+the page it came from were not recorded and cannot be recovered from this
+container, which means the terms rest on the owner's word rather than on a
+source that was read here; `assets/fruits/README.md` says so plainly. The sheet
+is kept whole and exactly as supplied; `tools/fruitart.py` is what turns seven
+of its sprites into something a calculator can draw.
+
 Everything else here is original.
 
 ## What isn't verified
@@ -880,11 +1192,11 @@ itself before neutralising `randomseed`, so every test saw fresh values. It
 took playing the `.tns` on a real calculator to see it, and the fix was to stop
 using `math.random` for the answer at all.
 
-Slide was written after that and owns its generator from the start, for the
-same reason: a puzzle that deals the identical scramble every time the document
-is opened is the same bug wearing different clothes. The remaining six games
-still seed the old way, so on hardware they will deal the same opening every
-launch — the same food, the same pipes, the same tiles.
+Slide and Fruits were written after that and own their generators from the
+start, for the same reason: a puzzle that deals the identical scramble every
+time the document is opened is the same bug wearing different clothes. The
+remaining six games still seed the old way, so on hardware they will deal the
+same opening every launch — the same food, the same pipes, the same tiles.
 
 The rest of what only real hardware can settle:
 
@@ -915,6 +1227,13 @@ The rest of what only real hardware can settle:
   repaints when you press a key, but the handheld is the one that has to draw
   them. If it turns out too slow the fix is cheap — drop the rim and fall back
   to the plain silhouettes, which is 336 rects.
+- **Whether a cascade keeps up.** Fruits repaints on every tick of a cascade,
+  which is the one thing here that draws a full screen at the timer's rate. The
+  busiest frame measures 618 draw calls; at the 50x handheld factor assumed
+  above that is roughly 4 ms of a 50 ms tick, so there is a lot of room. If the
+  factor is badly wrong the cascade animates more slowly rather than freezing —
+  the phase machine counts ticks, not wall clock — and the game stays correct
+  and responsive either way.
 - **Whether the font has chess glyphs.** It is not verified that the Nspire's
   font carries U+2654–U+265F, and a missing glyph on this OS is a silent empty
   box — which across sixty-four squares would be unreadable rather than merely

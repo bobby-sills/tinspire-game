@@ -14,10 +14,13 @@ search that has to be sliced across timer ticks), `chess` (the same, with
 rules complicated enough that verifying them is most of the work), `wordle`
 (text input rather than steering, bulk data baked into the bundle, and a rule
 whose correctness is the whole job), `klondike` (hidden state, unlimited undo,
-and a layout that has to adapt at paint time to how much it is asked to show)
-and `slide` (a generator that has to make illegal states unrepresentable, plus
-an independent oracle for the tests to check it against). Between them they
-cover the shapes a new game is likely to take — read whichever is closest to
+and a layout that has to adapt at paint time to how much it is asked to show),
+`slide` (a generator that has to make illegal states unrepresentable, plus
+an independent oracle for the tests to check it against) and `fruits`
+(match-three: the same unrepresentable-illegal-state trick, a cascade sliced
+across ticks, special pieces that change what a legal move *is*, and the only
+game here that draws with `gc:drawImage`). Between
+them they cover the shapes a new game is likely to take — read whichever is closest to
 what you're building.
 
 ## Commands
@@ -28,6 +31,7 @@ make GAME=<name> test         logic tests + runtime tests
 make GAME=<name> screenshots  preview PNGs -> build/<name>/screenshots
 make all-games                build everything under src/
 make list                     list games
+make probes                   hardware probes -> <Name>.tns (not committed)
 ```
 
 `GAME` defaults to `snake`. Set `LUA=` if your Lua 5.1 binary isn't `lua`.
@@ -48,7 +52,9 @@ tools/screenshot.lua    frame capture driver            -- shared
 tools/render.py         draw-ops -> PNG                 -- shared
 tools/fontmetrics.py    font metrics for the mock       -- shared
 tools/cardart.py        klondike only: card art -> Lua run-length spans
+tools/fruitart.py       fruits only: sprites -> TI.Image strings + rects
 tools/wordlist.py       wordle only: lists -> Lua string
+tools/probe/            throwaway .tns that ask real hardware a question
 assets/<game>/          source data, where a game has any
 ```
 
@@ -136,17 +142,55 @@ require string is always `"game"` regardless of the local's name.
   builds a string key and counts it in a table. `src/klondike/game.lua` encodes
   a card as one integer `(suit - 1) * 13 + rank` and unpacks it with division
   and modulo, for the same reason.
+- **Anything that animates a *settled* board is a new running cost, so gate
+  it.** `fruits` throbs its power fruit -- the sprite itself swells and
+  shrinks, behind a white outline of its own silhouette -- which means
+  repainting a board that is otherwise doing nothing. Note what scaling costs:
+  `gc:drawImage` cannot scale, so anything that changes size drops off the
+  one-call image path onto the rects, which is a second reason to keep that
+  encoding around. It repaints only when the throb
+  changes step -- once every three ticks, not every tick -- and only while a
+  power fruit is actually on the board, so the common case stays at zero
+  repaints. And watch what it does to the tests: `tests/fruits/frame.lua` used
+  to decide the board had settled by waiting for the repaint requests to stop,
+  which a board that throbs forever never does. Settling is now judged from
+  whether the *fruit* have stopped moving, which is what it always meant.
 - **Repaint is all-or-nothing.** `platform.window:invalidate()` redraws
   everything; only call it when something changed. A turn-based game can skip
   the timer entirely and repaint on input.
-- **Sprite art does not have to mean `image.new`.** `gc:drawImage` exists, but
-  the binary layout `image.new` wants is documented only by TI (blocked here),
-  and a wrong guess paints nothing with no error. 1-bit art can go in as
-  horizontal runs drawn with `fillRect` instead, which is API the mock and the
-  PNG renderer already model -- chess does this for a whole 32-piece board in
-  ~940 rects and four `setColorRGB` calls, and needed no harness changes at
-  all. `tools/sprites.py` is the worked example; group runs by colour, because
-  the colour change is the expensive part, not the rect.
+- **`image.new` works, and the format is written down below.** This used to
+  say the layout was undocumented and a wrong guess painted nothing -- true,
+  and it cost a day. It is now settled, on real hardware, by
+  `tools/probe/imageprobe2.lua`: a document that builds a dozen candidate
+  encodings and labels each on screen, so a human with a calculator can read
+  back which one painted. Build your own with `make probes` whenever a
+  question can only be answered by the device; it is far cheaper than guessing.
+
+  TI.Image is a **20-byte little-endian header** -- u32 width, u32 height, u8
+  alignment (0), u8 flags (0), u16 padding (0), u32 stride (2 * width), u16
+  bits per pixel (16), u16 planes (1) -- then 16-bit little-endian pixels laid
+  out `A RRRRR GGGGG BBBBB`: **RGB555 with alpha in the TOP bit**, 0 meaning
+  the pixel is not drawn. Note 555 and not 565, and 20 bytes and not 16; either
+  mistake alone is fatal. The OS validates the header and rejects a bad one
+  with "image header mismatch", so this fails loudly rather than silently.
+  `image.new` takes the string only at `apilevel < 2.3`; from 2.3 it wants a
+  `TI.ResourceHandle` from TI's SDK. `tools/bundle.py` emits 2.0, so the string
+  path is the one you get. `tests/nspire_stub.lua` models it and validates just
+  as strictly, and `tools/render.py` rasterises `drawImage`.
+
+  This matters most when a game repaints on a timer rather than on a key:
+  `fruits` draws a full 8x8 board in 64 `drawImage` calls where the same pixels
+  cost ~4100 rects. Wrap `image.new` in a `pcall` and keep a `fillRect` path
+  behind it anyway -- one calculator on one OS is what has been checked, and
+  the rects are also what scales when a cell is smaller than the sprite. Make
+  the fallback all-or-nothing: half a board in each encoding reads as a bug.
+
+- **`fillRect` runs are still the right answer for art that never scales and
+  repaints only on a key.** They are API the mock and the PNG renderer have
+  always modelled -- chess draws a whole 32-piece board in ~940 rects and four
+  `setColorRGB` calls, and needed no harness changes at all. `tools/sprites.py`
+  is the worked example; group runs by colour, because the colour change is the
+  expensive part, not the rect.
 - **Encode only what is not a flat fill.** A sprite that is mostly one colour
   should be a couple of rects plus run-encoded ink, not runs all the way
   through: `tools/cardart.py` takes a 37x52 card from 1924 pixels to ~150 runs
@@ -190,11 +234,24 @@ require string is always `"game"` regardless of the local's name.
   value and the launch-to-launch repeat never appears. To test seeding, nil out
   `os` and pin `math.random` to a constant first — `tests/wordle/ui.lua`'s
   `withSandbox` does exactly that, and fails on the old code.
-- `slide` owns its generator the same way and for the same reason: a puzzle
-  that deals the identical scramble at every launch is that bug wearing
-  different clothes. The other six games still seed with
+- `slide` and `fruits` own their generators the same way and for the same
+  reason: a board that deals the identical opening at every launch is that bug
+  wearing different clothes. The other six games still seed with
   `math.randomseed(os.time() + ...)` and so deal the same opening every launch
   on hardware.
+- **Owning the generator is only half of it -- deal at the right moment too.**
+  `fruits` owned its RNG from the start and still dealt the same board every
+  launch, because the board behind the title screen is dealt at *load*, when
+  the only entropy there has ever been is the seed's initial value, and
+  pressing enter started the round without dealing a new one. Deal when play
+  starts, from entropy accumulated while the player sat on the title screen.
+- **A test that identifies things by a handle can pass on handle churn alone.**
+  The test that should have caught the above compared boards by the identity of
+  the sprite in each cell, and the mock numbered images from a counter that ran
+  for the life of the process rather than per document -- so two launches of
+  the same board looked different. `stub.load` now restarts image numbering per
+  document, which is what the calculator does. If a test tells two things apart
+  by an identifier, check the identifier is a property of the thing.
 
 ## Testing without a calculator
 

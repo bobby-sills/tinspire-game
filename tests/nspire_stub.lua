@@ -101,6 +101,17 @@ function stub.newGC()
     log("drawLine", { x = x1, y = y1, x2 = x2, y2 = y2 })
   end
 
+  -- gc:drawImage(img, x, y). `img` must be something image.new made; the real
+  -- one ignores anything else, which on hardware is a blank screen with no
+  -- error, so the mock refuses instead.
+  function gc:drawImage(img, x, y)
+    assert(type(img) == "table" and img.__tiimage,
+           "drawImage: not an image (got " .. type(img) .. ")")
+    num(x, "x", "drawImage"); num(y, "y", "drawImage")
+    count("drawImage")
+    log("drawImage", { x = x, y = y, w = img.w, h = img.h, img = img })
+  end
+
   function gc:drawString(text, x, y, anchor)
     assert(type(text) == "string", "drawString: text must be a string, got " .. type(text))
     num(x, "x", "drawString"); num(y, "y", "drawString")
@@ -136,6 +147,87 @@ function stub.newGC()
 
   return gc, calls, ops
 end
+
+
+-- ------------------------------------------------------------------ images --
+--
+-- A model of TI.Image, the binary string image.new takes at apilevel < 2.3.
+-- The layout is documented at wiki.inspired-lua.org/TI.Image and was then
+-- confirmed against a real CX II with tools/probe/imageprobe2.lua: a 20-byte
+-- little-endian header, then 16-bit pixels laid out A RRRRR GGGGG BBBBB with
+-- alpha in the TOP bit.
+--
+-- This is validated as strictly as the hardware, which is the whole point of
+-- modelling it at all. The probe showed the OS rejects a malformed header
+-- outright -- it answered "image header mismatch" to a stride of zero -- so a
+-- mock that accepted anything would let a broken sprite reach the calculator
+-- and paint nothing, with no error to chase.
+
+local nextImageId = 0
+
+local function le(s, off, n)
+  local v = 0
+  for i = 0, n - 1 do
+    v = v + string.byte(s, off + i) * (256 ^ i)
+  end
+  return v
+end
+
+-- Five bits back out to eight the way the panel does, so a preview shows what
+-- the handheld shows rather than the original the format cannot hold.
+local function expand5(v)
+  return math.floor(v * 8 + math.floor(v / 4))
+end
+
+local imageModule = {}
+
+function imageModule.new(data)
+  if type(data) ~= "string" then
+    error("image.new: expected a TI.Image string, got " .. type(data), 2)
+  end
+  if #data < 20 then error("image.new: image header mismatch (too short)", 2) end
+
+  local w, h = le(data, 1, 4), le(data, 5, 4)
+  local align, flags, pad = le(data, 9, 1), le(data, 10, 1), le(data, 11, 2)
+  local stride = le(data, 13, 4)
+  local bpp, planes = le(data, 17, 2), le(data, 19, 2)
+
+  if w < 1 or h < 1 then error("image.new: image header mismatch (size)", 2) end
+  if align ~= 0 or flags ~= 0 or pad ~= 0 then
+    error("image.new: image header mismatch (reserved fields)", 2)
+  end
+  if stride ~= w * 2 then error("image.new: image header mismatch (stride)", 2) end
+  if bpp ~= 16 then error("image.new: image header mismatch (bpp)", 2) end
+  if planes ~= 1 then error("image.new: image header mismatch (planes)", 2) end
+  if #data ~= 20 + w * h * 2 then
+    error("image.new: image header mismatch (data length)", 2)
+  end
+
+  local px = {}
+  for i = 0, w * h - 1 do
+    local v = le(data, 21 + i * 2, 2)
+    if v >= 32768 then
+      local rest = v - 32768
+      local r = math.floor(rest / 1024)
+      local g = math.floor(rest / 32) % 32
+      local b = rest % 32
+      px[i + 1] = { expand5(r), expand5(g), expand5(b) }
+    else
+      px[i + 1] = false          -- top bit clear: not drawn
+    end
+  end
+
+  nextImageId = nextImageId + 1
+  local img = { __tiimage = true, id = nextImageId, w = w, h = h, px = px }
+  function img:width() return self.w end
+  function img:height() return self.h end
+  return img
+end
+
+function imageModule.__reset() nextImageId = 0 end
+
+stub.image = imageModule
+stub.resetImageIds = imageModule.__reset
 
 -- Saved before stub.load replaces math.randomseed below. Without it the
 -- replacement would stop the *next* load from reseeding, so only the first
@@ -175,6 +267,12 @@ function stub.load(path, w, h, seed)
   }
   _G.on = {}
   _G.var = { store = function() end, recall = function() return nil end }
+  _G.image = imageModule
+
+  -- Image handles are numbered from 1 for each document loaded, not for the
+  -- life of the process. A test that boots twice and compares what the two
+  -- drew needs the same sprite to carry the same id both times.
+  stub.resetImageIds()
 
   local chunk = assert(loadfile(path))
   chunk()

@@ -1124,14 +1124,14 @@ end
 -- rather than a button to lean on -- and never below zero.
 Fruit.HINT_COST = 20
 
--- `free` skips the charge. That is the idle nudge, not a cheaper hint: a
--- player who has stopped moving has usually stopped *seeing*, and charging
--- them for a prompt they did not ask for would be a strange thing to do.
-function Fruit:showHint(free)
+-- Always charged. There was briefly a free variant, for a nudge the game gave
+-- unasked after a spell of no input; the nudge is gone, so the parameter went
+-- with it rather than sitting here with no caller.
+function Fruit:showHint()
   if self.state ~= "playing" or self.phase ~= "idle" then return nil end
   local x1, y1, x2, y2 = self:findMove()
   if not x1 then return nil end
-  if not self.hint and not free then
+  if not self.hint then
     self.score = max(0, self.score - Fruit.HINT_COST)
   end
   self.hint = { x1 = x1, y1 = y1, x2 = x2, y2 = y2 }
@@ -1301,33 +1301,21 @@ local CURSOR   = { 250, 238, 120 }
 local SELECT   = { 120, 224, 255 }
 local HINT     = { 120, 250, 160 }
 
--- A power fruit is marked by making the FRUIT ITSELF throb -- swelling and
--- shrinking a couple of pixels -- behind a white outline of its own
--- silhouette. Not a ring around the cell: a ring is a box drawn near a fruit,
--- and this is the fruit, which is what the player is actually looking at.
+-- A power fruit is marked by a white outline of its own silhouette, flashing
+-- on and off. The fruit itself is left exactly as it is.
 --
--- Two things follow, and both cost something.
+-- An earlier version swelled and shrank the sprite as well. That looked fine
+-- and cost far more than it looks: gc:drawImage cannot scale, so a fruit at
+-- any size but its native one leaves the one-call image path and arrives as
+-- about 73 rects. Flashing an outline keeps every fruit on the blit path and
+-- adds 23 rects for the outline, on half the frames.
 --
--- gc:drawImage cannot scale, so a fruit that throbs cannot use the one-call
--- image path except at exactly its native size -- it goes through the rects
--- instead, which is the second reason that encoding earns its place. About 73
--- rects for the fruit and 23 for the outline, against one drawImage. That is
--- affordable because power fruit are a handful on a board and not sixty-four
--- of them, and tests/fruits/ui.lua measures the worst frame a real cascade
--- produces rather than trusting that.
---
--- And the outline is FILLED, which is the one exception to the rule that
--- nothing but fruit is ever filled inside a cell. tests/fruits/frame.lua knows
--- this exact colour and takes it as chrome; any other stray colour in a cell
--- still fails the test that guards the rule.
+-- The outline is FILLED, which is the one exception to the rule that nothing
+-- but fruit is ever filled inside a cell. tests/fruits/frame.lua knows this
+-- exact colour and takes it as chrome; any other stray colour in a cell still
+-- fails the test that guards the rule.
 local HALO = { 252, 252, 240 }
-
--- Sizes the throb steps through, as a delta on the normal sprite size. Six
--- steps so it eases rather than snapping between two extremes, and it passes
--- through 0 -- where the fruit is at its native size and costs one drawImage
--- again, so the cheapest step is free.
-local THROB = { -1, 0, 1, 2, 1, 0 }
-local THROB_TICKS = 3     -- host ticks per step, so a cycle is a little under a second
+local FLASH_TICKS = 6     -- host ticks on, then the same off: about a third of a second each
 -- The level bar's own two colours. Deliberately not shared with anything else
 -- on screen: the frame reader separates chrome from art by colour, and a value
 -- doing two jobs is how that stops working.
@@ -1352,19 +1340,12 @@ local sel = nil                 -- { x, y } while a fruit is picked up
 -- Fruit.newRandom is built to scramble apart.
 local entropy = 1
 
--- Ticks since the player last did anything. A board they have stopped moving
--- on is usually a board they have stopped seeing, so after a while the game
--- lights a move for them -- free, unlike the hint they ask for with H.
-local idle = 0
-local IDLE_NUDGE = 100     -- ticks, so about five seconds at BASE_TICK
-
--- Where the power-fruit throb is in its cycle, and how long this step has run.
-local throbStep = 1
-local throbHeld = 0
+-- Where the power-fruit flash is in its cycle, and how long this step has run.
+local flashOn = true
+local flashHeld = 0
 
 local function stir(v)
   entropy = Fruit.mix(entropy, v)
-  idle = 0
 end
 
 local function col(gc, c)
@@ -1546,43 +1527,33 @@ end
 newRound()
 timer.start(BASE_TICK)
 
--- Advances the throb, and says whether it moved to a new step -- which is the
--- only moment it is worth repainting for.
-local function stepThrob()
-  throbHeld = throbHeld + 1
-  if throbHeld < THROB_TICKS then return false end
-  throbHeld = 0
-  throbStep = throbStep % #THROB + 1
+-- Advances the flash, and says whether it just turned over -- the only moment
+-- it is worth repainting for.
+local function stepFlash()
+  flashHeld = flashHeld + 1
+  if flashHeld < FLASH_TICKS then return false end
+  flashHeld = 0
+  flashOn = not flashOn
   return true
 end
 
 function on.timer()
-  -- Deliberately not stir(): a timer tick is not the player doing something,
-  -- and resetting the idle count here would mean the nudge never fires.
+  -- Deliberately not stir(): a timer tick is not the player doing anything.
   entropy = Fruit.mix(entropy, 1)
 
   if board:busy() then
     board:tick()
-    stepThrob()                    -- keep the cycle running; we repaint anyway
+    stepFlash()                    -- keep the cycle running; we repaint anyway
     platform.window:invalidate()   -- something is moving; keep the frames coming
-    idle = 0
     return
   end
 
-  if board.state ~= "playing" then return end
-
-  -- A settled board repaints for exactly two reasons, and both are gated so
-  -- that most of the time it still repaints not at all: the throb, and only
-  -- while there is a power fruit to throb; and the nudge, once.
-  if stepThrob() and select(1, board:countSpecials()) > 0 then
+  -- A settled board repaints for exactly one reason, and it is gated twice so
+  -- that most of the time it still repaints not at all: only when the flash
+  -- actually turns over, and only while there is a power fruit to flash.
+  if board.state == "playing" and stepFlash()
+     and select(1, board:countSpecials()) > 0 then
     platform.window:invalidate()
-  end
-
-  if not board.hint then
-    idle = idle + 1
-    if idle >= IDLE_NUDGE and board:showHint(true) then
-      platform.window:invalidate()
-    end
   end
 end
 
@@ -1777,21 +1748,11 @@ local function drawHalo(gc, kind, px, py, size)
   end
 end
 
--- A power fruit at its current throb size, outline behind it, centred on its
--- cell so it swells about its own middle.
-local function drawPower(gc, kind, x, y)
-  -- Capped so the fruit plus its outline still fits the cell: the outline adds
-  -- about a sixteenth on each side, so the fruit has to stop a little short of
-  -- the full width or it would bleed into its neighbours.
-  local size = ui.sprite + THROB[throbStep]
-  local cap = ui.cell - 3
-  if size > cap then size = cap end
-  if size < 3 then size = 3 end
-
-  local px = cellX(x) + floor((ui.cell - size) / 2)
-  local py = cellY(y) + floor((ui.cell - size) / 2)
-  drawHalo(gc, kind, px, py, size)
-  drawFruit(gc, kind, px, py, size)
+-- A power fruit: the ordinary sprite, with its outline behind it on the half
+-- of the cycle the flash is on.
+local function drawPower(gc, kind, x, y, px, py)
+  if flashOn then drawHalo(gc, kind, px, py, ui.sprite) end
+  drawFruit(gc, kind, px, py, ui.sprite)
 end
 
 -- The fruit that are sitting still. During `clear` the matched ones are still
@@ -1820,11 +1781,12 @@ local function drawStatic(gc)
             -- A picked-up fruit rides a little high, so the pick-up reads even
             -- where the cursor ring is sitting on top of it. Never more than
             -- the gutter, or it would climb out of its own cell.
+            local lift = (sel and sel.x == x and sel.y == y) and min(2, ui.pad) or 0
+            local px, py = spriteX(x), spriteY(y) - lift
             if board.special[i] then
-              drawPower(gc, k, x, y)
+              drawPower(gc, k, x, y, px, py)
             else
-              local lift = (sel and sel.x == x and sel.y == y) and min(2, ui.pad) or 0
-              drawFruit(gc, k, spriteX(x), spriteY(y) - lift, ui.sprite)
+              drawFruit(gc, k, px, py, ui.sprite)
             end
           end
         end
@@ -1918,18 +1880,37 @@ local function drawHud(gc)
   gc:drawString(stats, max(3, statsX), floor((ui.by - 14) / 2), "top")
 end
 
--- One "LABEL      value" row. Measured and right-aligned rather than laid out
--- on an assumed character width, because the font is unknown until runtime and
--- a five-digit score is exactly when a guess would overflow the panel.
+-- One "LABEL      value" row, returning the y the next row starts at.
+--
+-- The height comes from gc:getStringHeight and not from a constant. That is
+-- not fussiness: this panel shipped with its row heights written down as
+-- numbers that were right for the font the MOCK measures with, and on the
+-- calculator -- whose font is taller -- the rule ran through the SCORE text
+-- and the level bar sat on top of the word LEVEL. Nothing here may assume how
+-- tall a line is.
 local function panelRow(gc, label, value, x, y, w, accent)
   gc:setFont("sansserif", "r", 9)
+  local h = gc:getStringHeight(label)
   col(gc, DIM)
-  gc:drawString(label, x, y + 1, "top")
+  gc:drawString(label, x, y, "top")
+
   gc:setFont("sansserif", "b", 11)
+  h = max(h, gc:getStringHeight(value))
   col(gc, accent or TEXT)
   gc:drawString(value, x + max(0, w - gc:getStringWidth(value)), y, "top")
-  return y + 17
+  return y + h + 2
 end
+
+-- How tall a plain row is, measured, so the panel can budget for the rows it
+-- has not drawn yet before deciding how big the score may be.
+local function panelRowHeight(gc)
+  gc:setFont("sansserif", "r", 9)
+  local h = gc:getStringHeight("0")
+  gc:setFont("sansserif", "b", 11)
+  return max(h, gc:getStringHeight("0")) + 2
+end
+
+local BAR_H = 5
 
 local function drawPanel(gc)
   if ui.panelW <= 0 then return end
@@ -1938,59 +1919,79 @@ local function drawPanel(gc)
   gc:fillRect(x, y, w, ui.panelH)
 
   local ix, iw = x + 9, w - 18
-  local cy = y + 9
+  local pad = 8
+  local cy = y + pad
+  local bottom = y + ui.panelH - pad
+
+  local rowH = panelRowHeight(gc)
+  -- What the rest of the panel needs: four rows, the level bar, and the rule.
+  -- The score gets whatever is left, which is why it is measured first.
+  local below = rowH * 4 + BAR_H + 4 + 8
 
   gc:setFont("sansserif", "r", 9)
   col(gc, DIM)
   gc:drawString("SCORE", ix, cy, "top")
-  cy = cy + 12
-  gc:setFont("sansserif", "b", 24)
-  col(gc, GOLD)
+  cy = cy + gc:getStringHeight("SCORE") + 1
+
+  -- Step the score down through the sizes rather than let it run off the panel
+  -- or into the rows underneath. Six figures at 24pt does not fit, and the
+  -- Nspire would clip it without a word.
   local sc = tostring(board.score)
-  -- Step the score down through the sizes rather than let it run off the
-  -- panel: six figures at 24pt does not fit and the Nspire would clip it
-  -- without a word.
+  local room = bottom - below - cy
+  gc:setFont("sansserif", "b", 12)
   for _, size in ipairs({ 24, 16, 12 }) do
     gc:setFont("sansserif", "b", size)
-    if gc:getStringWidth(sc) <= iw then break end
+    if gc:getStringWidth(sc) <= iw and gc:getStringHeight(sc) <= room then break end
   end
+  col(gc, GOLD)
   gc:drawString(sc, ix + max(0, iw - gc:getStringWidth(sc)), cy, "top")
-  cy = cy + 28
+  cy = cy + gc:getStringHeight(sc) + 4
 
   col(gc, HUD_RULE)
   gc:drawLine(ix, cy, ix + iw, cy)
-  cy = cy + 7
+  cy = cy + 5
 
-  cy = panelRow(gc, "LEVEL", tostring(board.level), ix, cy, iw,
-                board.leveledUp and HINT or nil)
-
-  -- The bar under it. Drawn from the game's own 0..1 rather than from the
-  -- counts, so the panel cannot disagree with the rule about when a level ends.
-  local bw, bh = iw, 5
-  col(gc, BAR_BG)
-  gc:fillRect(ix, cy - 4, bw, bh)
-  local filled = floor(bw * board:levelProgress() + 0.5)
-  if filled > 0 then
-    col(gc, BAR_FILL)
-    gc:fillRect(ix, cy - 4, filled, bh)
+  -- Each row is drawn only if it fits. On a short panel the bottom ones drop
+  -- off rather than piling up on each other.
+  local function row(label, value, accent)
+    if cy + rowH > bottom then return false end
+    cy = panelRow(gc, label, value, ix, cy, iw, accent)
+    return true
   end
-  cy = cy + 8
 
-  cy = panelRow(gc, "BEST", tostring(board.best), ix, cy, iw)
-  cy = panelRow(gc, "MOVES", tostring(board.moves), ix, cy, iw)
+  if row("LEVEL", tostring(board.level), board.leveledUp and HINT or nil) then
+    -- The bar goes on its own line UNDER the level row -- never overlapping
+    -- it. Drawn from the game's own 0..1 rather than from the counts, so the
+    -- panel cannot disagree with the rule about when a level ends.
+    if cy + BAR_H <= bottom then
+      col(gc, BAR_BG)
+      gc:fillRect(ix, cy, iw, BAR_H)
+      local filled = floor(iw * board:levelProgress() + 0.5)
+      if filled > 0 then
+        col(gc, BAR_FILL)
+        gc:fillRect(ix, cy, filled, BAR_H)
+      end
+      cy = cy + BAR_H + 4
+    end
+  end
+
+  row("BEST", tostring(board.best))
+  row("MOVES", tostring(board.moves))
 
   -- The chain multiplier only means anything while a cascade is running, so it
   -- shows live then and the round's best otherwise.
   local live = board.chain and board.chain > 1
-  cy = panelRow(gc, live and "CHAIN" or "BEST CHAIN",
-                "x" .. Fruit.chainMult(live and board.chain or board.bestChain),
-                ix, cy, iw, live and HINT or nil)
+  row(live and "CHAIN" or "BEST CHAIN",
+      "x" .. Fruit.chainMult(live and board.chain or board.bestChain),
+      live and HINT or nil)
 
   if board.lastGain and board.lastGain > 0 and board:busy() then
     gc:setFont("sansserif", "b", 16)
-    col(gc, GOLD)
-    local t = "+" .. board.lastGain
-    gc:drawString(t, ix + max(0, iw - gc:getStringWidth(t)), cy + 6, "top")
+    if cy + gc:getStringHeight("0") <= bottom then
+      col(gc, GOLD)
+      local t = "+" .. board.lastGain
+      gc:drawString(t, ix + max(0, iw - gc:getStringWidth(t)), cy + 2, "top")
+    end
   end
 end
 

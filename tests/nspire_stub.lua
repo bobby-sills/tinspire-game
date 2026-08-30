@@ -14,6 +14,19 @@ do
   stub.metrics = loaded and metrics or nil
 end
 
+-- Text is measured with DejaVu here and with the Nspire's own font on the
+-- calculator, and the two are not the same size. Setting stub.metricsScale
+-- above 1 inflates both measurements, so a layout can be tested against a font
+-- BIGGER than the preview's -- which is exactly the difference that let Fruits
+-- ship a side panel whose rule ran through its own heading and whose progress
+-- bar sat on top of the word it labelled. Reset it to 1 after use.
+stub.metricsScale = 1
+
+-- The height rule, exposed so a test can work out where a drawn string ends.
+function stub.stringHeight(size)
+  return math.floor((size + 4) * stub.metricsScale)
+end
+
 -- Values the Nspire's own font machinery accepts.
 local FONT_FAMILIES = { sansserif = true, serif = true, mono = true }
 local FONT_STYLES   = { r = true, b = true, i = true, bi = true }
@@ -130,19 +143,19 @@ function stub.newGC()
     local table_ = stub.metrics and stub.metrics[self._style or "r"]
     local widths = table_ and table_[size]
     if not widths then
-      return math.floor(#text * (size * 0.55))
+      return math.floor(#text * (size * 0.55) * stub.metricsScale)
     end
     local total = 0
     for i = 1, #text do
       local code = string.byte(text, i)
       total = total + (widths[code - 31] or widths[1] or 0)
     end
-    return total
+    return math.floor(total * stub.metricsScale)
   end
 
   function gc:getStringHeight(text)
     assert(type(text) == "string", "getStringHeight: needs a string")
-    return (self._size or 10) + 4
+    return stub.stringHeight(self._size or 10)
   end
 
   return gc, calls, ops

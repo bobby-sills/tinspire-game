@@ -143,12 +143,13 @@ require string is always `"game"` regardless of the local's name.
   a card as one integer `(suit - 1) * 13 + rank` and unpacks it with division
   and modulo, for the same reason.
 - **Anything that animates a *settled* board is a new running cost, so gate
-  it.** `fruits` throbs its power fruit -- the sprite itself swells and
-  shrinks, behind a white outline of its own silhouette -- which means
-  repainting a board that is otherwise doing nothing. Note what scaling costs:
-  `gc:drawImage` cannot scale, so anything that changes size drops off the
-  one-call image path onto the rects, which is a second reason to keep that
-  encoding around. It repaints only when the throb
+  it.** `fruits` flashes a white outline on its power fruit, which means
+  repainting a board that is otherwise doing nothing. It repaints only when the
+  flash turns over, and only while a power fruit is on the board, so the common
+  case stays at zero repaints. Note what *scaling* costs, which is why the
+  sprite itself no longer throbs: `gc:drawImage` cannot scale, so anything that
+  changes size drops off the one-call image path onto the rects -- 73 of them
+  against one blit. It repaints only when the throb
   changes step -- once every three ticks, not every tick -- and only while a
   power fruit is actually on the board, so the common case stays at zero
   repaints. And watch what it does to the tests: `tests/fruits/frame.lua` used
@@ -202,9 +203,19 @@ require string is always `"game"` regardless of the local's name.
   sprite from what it emitted and compare against the source image -- a
   mis-encoded sprite is otherwise a silent wrong picture on the handheld and
   nowhere else.
-- **Font metrics are unknown until runtime.** Always size boxes with
-  `gc:getStringWidth`, never a character-count estimate. Have layouts degrade
-  when text is wider than expected rather than assuming it fits.
+- **Font metrics are unknown until runtime -- HEIGHTS as well as widths.**
+  Always size boxes with `gc:getStringWidth` and `gc:getStringHeight`, never a
+  character-count estimate and never a row height written down as a number.
+  Have layouts degrade when text is bigger than expected rather than assuming
+  it fits. `fruits` shipped a side panel whose row heights were constants
+  tuned against the mock's DejaVu; on the calculator, whose font is taller, the
+  rule ran through its own heading and the progress bar sat on the word it
+  labelled. The preview could not see it, because the preview measures with
+  the font the layout was tuned against.
+  `tests/nspire_stub.lua` has a `stub.metricsScale` knob that inflates both
+  measurements, so a layout can be tested against a font *bigger* than
+  DejaVu -- `tests/fruits/ui.lua` renders the panel at up to 1.5x and asserts
+  nothing collides. Use it for any panel of stacked text.
 - **Colours** are integers 0–255. Font sizes are limited (7, 9, 10, 11, 12, 16,
   24); the mock rejects others. Anchors are `top`/`middle`/`baseline`. The
   preview renderer anchors text at the top left, so use `"top"` and centre by

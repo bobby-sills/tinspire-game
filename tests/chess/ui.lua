@@ -132,6 +132,52 @@ return function(t)
     end
   end)
 
+  -- --------------------------------------------------- the two draw paths --
+  --
+  -- A piece is one gc:drawImage where the runtime will build the images, and
+  -- the identical pixels as fillRect runs where it will not. Both are
+  -- exercised here and then held against each other: a fallback nothing tests
+  -- is a fallback that does not work.
+
+  test("the handheld draws one image per piece, not a heap of rects", function()
+    local hs = hotseat({ w = 318, h = 212 })
+    local calls = hs:paint()
+    eq(calls.drawImage, 32, "thirty-two men, thirty-two blits")
+    -- The runs would be about 940 rects for the same board. Everything left is
+    -- chrome -- squares, rim, panels -- so hold it well under that, or a
+    -- regression that quietly falls back would still pass.
+    ok(calls.fillRect < 100,
+      "the board is chrome plus blits (" .. calls.fillRect .. " rects)")
+  end)
+
+  test("the rect fallback paints the identical position", function()
+    -- The position the image path draws, to hold the fallback against.
+    local viaImages = Frame.signature(Frame.frame(hotseat({ w = 318, h = 212 })))
+
+    -- Now make image.new fail the way an OS that will not take the string form
+    -- would. Every piece must fall back to the runs -- and paint the same
+    -- board, since it is the same art either way.
+    local realNew = t.stub.image.new
+    t.stub.image.new = function() error("image.new: not supported here", 2) end
+    local built, viaRects = pcall(function()
+      local hs = hotseat({ w = 318, h = 212 })
+      local calls = hs:paint()
+      eq(calls.drawImage, 0, "nothing tried to draw an image")
+      ok(calls.fillRect > 500,
+        "the pieces arrived as rects instead (" .. calls.fillRect .. ")")
+      local f = Frame.frame(hs)
+      eq(Frame.pieceCount(f), 32, "all thirty-two men are still on the board")
+      eq(f.unknownSprites, nil, "and every one of them is a known piece")
+      return Frame.signature(f)
+    end)
+    t.stub.image.new = realNew
+
+    ok(built, "the fallback ran: " .. tostring(viaRects))
+    if built then
+      eq(viaRects, viaImages, "both encodings paint the same position")
+    end
+  end)
+
   test("the sidebar never overlaps the board", function()
     for _, size in ipairs(SIZES) do
       local hs = hotseat({ w = size[1], h = size[2] })

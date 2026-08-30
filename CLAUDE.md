@@ -18,8 +18,8 @@ and a layout that has to adapt at paint time to how much it is asked to show),
 `slide` (a generator that has to make illegal states unrepresentable, plus
 an independent oracle for the tests to check it against) and `fruits`
 (match-three: the same unrepresentable-illegal-state trick, a cascade sliced
-across ticks, special pieces that change what a legal move *is*, and the only
-game here that draws with `gc:drawImage`). Between
+across ticks, special pieces that change what a legal move *is*). `fruits` and
+`chess` are the two that draw with `gc:drawImage`. Between
 them they cover the shapes a new game is likely to take — read whichever is closest to
 what you're building.
 
@@ -185,12 +185,34 @@ require string is always `"game"` regardless of the local's name.
   the rects are also what scales when a cell is smaller than the sprite. Make
   the fallback all-or-nothing: half a board in each encoding reads as a bug.
 
-- **`fillRect` runs are still the right answer for art that never scales and
-  repaints only on a key.** They are API the mock and the PNG renderer have
-  always modelled -- chess draws a whole 32-piece board in ~940 rects and four
-  `setColorRGB` calls, and needed no harness changes at all. `tools/sprites.py`
-  is the worked example; group runs by colour, because the colour change is the
-  expensive part, not the rect.
+  Note what the blit costs in colour: TI.Image holds five bits a channel, so an
+  ink comes back off the image up to 7/255 from where it started. That is why
+  `tests/chess/frame.lua` and `tests/fruits/frame.lua` both key colours at the
+  handheld's depth rather than at eight bits -- otherwise the same sprite reads
+  as two different things depending on which encoding drew it.
+
+- **Whether to blit or to run is a question about size and repaint rate, and it
+  is answered by measuring, not by taste.** Both are now worked examples:
+  - `chess` blits. 12 sprites at 16x16 are 25 KB of escaped source, and a full
+    board went from ~940 rects to 32 `drawImage` calls. It repaints only on a
+    key, but that is *every* key, and the arrow keys move a cursor one square
+    at a time. `tools/sprites.py` emits both encodings and checks them against
+    the art and against each other.
+  - `klondike` does not, and that is measured too: 53 cards at 37x52 come to
+    721 KB of escaped Lua source, **9.4x the whole 77 KB bundle**, and the
+    twelve face cards' unique art (~180 KB) means decomposing into shared pips
+    would not rescue it either. It repaints only on a key, so the rects cost
+    once per keystroke. `tools/cardart.py` carries the working.
+
+  So: a flat shape is already one call and gains nothing from an image; art
+  that repaints on a timer should almost always be blitted; art that repaints
+  on a key should be blitted if it fits. Everything else here -- `snake`,
+  `flappy`, `2048`, `connect4`, `wordle`, `slide` -- draws 90 rects a frame or
+  fewer and has nothing to win. Measured, per frame, across all nine games.
+
+- **When runs are the answer, group them by colour**, because the colour change
+  is the expensive part, not the rect. `tools/sprites.py` still emits its runs
+  that way for the fallback path.
 - **Encode only what is not a flat fill.** A sprite that is mostly one colour
   should be a couple of rects plus run-encoded ink, not runs all the way
   through: `tools/cardart.py` takes a 37x52 card from 1924 pixels to ~150 runs

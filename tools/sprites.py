@@ -1,22 +1,37 @@
 #!/usr/bin/env python3
-"""Turn the chess piece PNGs into Lua run-length spans, in place in main.lua.
+"""Turn the chess piece PNGs into Lua sprites, in place in main.lua.
 
-The Nspire *can* draw images -- gc:drawImage since apilevel 1.0, with
-image.new() building one from a binary string -- but the byte layout of that
-string is documented only by TI, and getting it wrong shows up on hardware as
-a blank screen with nothing to debug. These sprites do not need it: they are
-1-bit masks, three colours in the whole set (transparent, opaque white, opaque
-black), and the white and black files are the *same silhouette* in two inks.
+Each piece is emitted twice, in two encodings of the same pixels:
 
-So each piece is emitted as horizontal runs and drawn with fillRect, which is
-API this repo's mock and PNG renderer already model and already test. A whole
-32-piece board costs about a thousand rects in four colours; chess repaints on
-input rather than on a timer, so that is a per-keypress cost, not a per-frame
-one.
+  img         a TI.Image string for image.new + gc:drawImage -- one call a
+              piece, so a full board costs 32 calls where the runs cost ~940
+  fill, edge  the identical pixels as horizontal runs of fillRect, kept as the
+              fallback for a runtime that will not build the images
+
+The image path is the one the handheld takes. This file used to say the byte
+layout was documented only by TI and a wrong guess painted nothing -- true, and
+it is why chess shipped on rects. It is now settled, on real hardware, by
+tools/probe/imageprobe2.lua, and written down in CLAUDE.md: a 20-byte
+little-endian header, then 16-bit pixels laid out A RRRRR GGGGG BBBBB.
+
+The care that buys: image.new's string form is documented only for
+apilevel < 2.3, and it has been confirmed on exactly one calculator on one OS.
+So src/chess/main.lua builds the images inside a pcall and falls back to the
+runs -- every piece, never half a board in each encoding.
 
 `edge` is a one-pixel rim, the 8-connected dilation of the mask minus the mask
 itself. Without it a white piece on a light square and a black piece on a dark
 square are both nearly invisible -- see the previews in docs/screenshots.
+
+The white and black PNGs are the *same silhouette* in two inks, so the four ink
+colours live here rather than in main.lua and are emitted into the generated
+block: the images bake them in, and an ink that differed between the two
+encodings would be a piece that changed shade when the fallback kicked in.
+
+Every sprite is rebuilt from what was emitted -- the image decoded back through
+its header, the runs replayed onto a blank grid -- then both are compared
+against the source PNG and against each other. A mis-encoded sprite is
+otherwise a silent wrong picture on the handheld and nowhere else.
 
   python3 tools/sprites.py            # rewrites the block in src/chess/main.lua
   python3 tools/sprites.py --check    # exit 1 if the file is out of date
@@ -39,6 +54,11 @@ END = "-- <<< end generated"
 # Chess.PAWN..Chess.KING are 1..6, and the table below is emitted in that order.
 PIECES = ["pawn", "knight", "bishop", "rook", "queen", "king"]
 SIZE = 16
+
+# The four inks, indexed by side the way Chess.WHITE and Chess.BLACK are: 1, 2.
+# A piece is its silhouette in FILL over a one-pixel rim in EDGE.
+FILL = [(248, 246, 240), (44, 44, 54)]
+EDGE = [(60, 48, 40), (226, 224, 232)]
 
 
 def mask(name: str, colour: str):
@@ -90,28 +110,192 @@ def wrap(values, indent, per_line=24):
     return "\n".join(lines)
 
 
+# ----------------------------------------------------------------- TI.Image --
+
+def u16(v):
+    return bytes([v & 0xFF, (v >> 8) & 0xFF])
+
+
+def u32(v):
+    return bytes([v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF])
+
+
+def to555(c):
+    """RGB888 -> the five-bit-per-channel triple the handheld stores."""
+    return (c[0] >> 3, c[1] >> 3, c[2] >> 3)
+
+
+def from555(t):
+    """Back out to eight bits the way a 5-bit DAC does, so the comparisons
+    below are against what will actually be on screen rather than against the
+    original, which no 15-bit format could reproduce."""
+    return tuple((v << 3) | (v >> 2) for v in t)
+
+
+def ti_image(grid):
+    """`grid` is SIZE rows of RGB triples, or None where nothing is drawn."""
+    out = bytearray()
+    out += u32(SIZE) + u32(SIZE)
+    out += bytes([0, 0]) + u16(0)        # alignment, flags, padding
+    out += u32(SIZE * 2)                 # stride
+    out += u16(16) + u16(1)              # bits per pixel, planes
+    for row in grid:
+        for c in row:
+            if c is None:
+                out += u16(0)            # top bit clear: not drawn
+            else:
+                r, g, b = to555(c)
+                out += u16(0x8000 | (r << 10) | (g << 5) | b)
+    return bytes(out)
+
+
+def read_ti_image(bs):
+    """Decode, checking the header the same way the OS does -- the probe showed
+    it rejects a bad one -- so a malformed emit fails here first."""
+    def rd(o, n):
+        v = 0
+        for i in range(n):
+            v |= bs[o + i] << (8 * i)
+        return v
+
+    if len(bs) < 20:
+        raise SystemExit("image shorter than its header")
+    w, h = rd(0, 4), rd(4, 4)
+    if (rd(8, 1), rd(9, 1), rd(10, 2)) != (0, 0, 0):
+        raise SystemExit("alignment/flags/padding must be zero")
+    if rd(12, 4) != w * 2:
+        raise SystemExit("stride is not 2 * width")
+    if rd(16, 2) != 16 or rd(18, 2) != 1:
+        raise SystemExit("bits-per-pixel or planes wrong")
+    if len(bs) != 20 + w * h * 2:
+        raise SystemExit("pixel data is the wrong length")
+
+    grid = []
+    for y in range(h):
+        line = []
+        for x in range(w):
+            v = rd(20 + (y * w + x) * 2, 2)
+            if v & 0x8000:
+                line.append(from555(((v >> 10) & 31, (v >> 5) & 31, v & 31)))
+            else:
+                line.append(None)
+        grid.append(line)
+    return grid
+
+
+def lua_string(bs):
+    """Bytes as a Lua string literal: printable where it can be, decimal
+    escapes where it cannot. A digit straight after an escape would be eaten
+    into it, so those are escaped too."""
+    parts = []
+    prev_escape = False
+    for b in bs:
+        printable = 32 <= b < 127 and b not in (34, 39, 92)
+        if printable and not (prev_escape and chr(b).isdigit()):
+            parts.append(chr(b))
+            prev_escape = False
+        else:
+            parts.append("\\%03d" % b)
+            prev_escape = True
+    return "".join(parts)
+
+
+# ------------------------------------------------------------- the sprites --
+
+def paint(fill_mask, edge_mask, side):
+    """One piece as a pixel grid: the rim, then the silhouette over it -- the
+    same order main.lua draws the two run lists in, so a pixel claimed by both
+    masks resolves the same way in either encoding."""
+    grid = [[None] * SIZE for _ in range(SIZE)]
+    for y in range(SIZE):
+        for x in range(SIZE):
+            if edge_mask[y][x]:
+                grid[y][x] = EDGE[side]
+            if fill_mask[y][x]:
+                grid[y][x] = FILL[side]
+    return grid
+
+
+def replay(fill_runs, edge_runs, side):
+    """Rebuild a piece by replaying the emitted runs onto a blank grid, the way
+    main.lua's fallback draws them."""
+    grid = [[None] * SIZE for _ in range(SIZE)]
+    for spans, colour in ((edge_runs, EDGE[side]), (fill_runs, FILL[side])):
+        for i in range(0, len(spans), 3):
+            y, x, n = spans[i], spans[i + 1], spans[i + 2]
+            for dx in range(n):
+                grid[y][x + dx] = colour
+    return grid
+
+
+def encode(name):
+    """One piece, both encodings, each checked against the source art."""
+    white = mask(name, "white")
+    black = mask(name, "black")
+    if white != black:
+        raise SystemExit(
+            f"{name}: the white and black files are different silhouettes, so the "
+            f"single mask this emitter assumes is wrong")
+
+    fill_runs, edge_runs = runs(white), runs(dilate(white))
+    images = []
+    for side in (0, 1):
+        want = paint(white, dilate(white), side)
+        # What the handheld can actually hold: the source inks are 8-bit and
+        # TI.Image keeps five bits a channel, so the target for both encodings
+        # is the source reduced and expanded back, not the source itself.
+        want555 = [[(from555(to555(c)) if c else None) for c in row] for row in want]
+
+        blob = ti_image(want)
+        if read_ti_image(blob) != want555:
+            raise SystemExit(f"{name}: TI.Image did not round-trip")
+
+        # The runs carry the original 8-bit inks, so compare them at the depth
+        # the two encodings can both reach. Equal here means the fallback and
+        # the blit put the same picture on the same screen.
+        rebuilt = replay(fill_runs, edge_runs, side)
+        if [[(from555(to555(c)) if c else None) for c in row] for row in rebuilt] != want555:
+            raise SystemExit(
+                f"{name}: the runs and the image disagree on side {side + 1}")
+        images.append(lua_string(blob))
+
+    return fill_runs, edge_runs, images
+
+
 def generate() -> str:
     body = [BEGIN,
             "-- Piece sprites: \"Pixel Chess\" by brosen, https://brosen.itch.io/pixel-chess",
-            "-- Each entry is horizontal runs of a 16x16 mask, flattened to y, x, length.",
-            "-- `edge` is the one-pixel rim that keeps a piece readable on a square of its",
-            "-- own tone. Regenerate with tools/sprites.py after changing the art.",
+            "-- Six 16x16 pieces, each in two encodings of the same pixels:",
+            "--   img    a TI.Image string per side, for image.new + gc:drawImage --",
+            "--          one call a piece, against ~30 rects for the runs below",
+            "--   fill / edge",
+            "--          horizontal runs of the mask, flattened to y, x, length, and",
+            "--          drawn with fillRect where the images cannot be built",
+            "-- `edge` is the one-pixel rim that keeps a piece readable on a square of",
+            "-- its own tone. The inks are emitted here because the images bake them in.",
+            "-- tools/sprites.py rebuilds both encodings from what it wrote and compares",
+            "-- them against the art and against each other. Regenerate it after any",
+            "-- change to assets/chess.",
             "local SPRITE_PX = %d" % SIZE,
+            "local W_FILL = { %d, %d, %d }" % FILL[0],
+            "local W_EDGE = { %d, %d, %d }" % EDGE[0],
+            "local B_FILL = { %d, %d, %d }" % FILL[1],
+            "local B_EDGE = { %d, %d, %d }" % EDGE[1],
             "local SPRITES = {"]
 
     for name in PIECES:
-        white = mask(name, "white")
-        black = mask(name, "black")
-        if white != black:
-            raise SystemExit(
-                f"{name}: the white and black files are different silhouettes, so the "
-                f"single mask this emitter assumes is wrong")
+        fill_runs, edge_runs, images = encode(name)
         body.append("  { -- %s" % name)
         body.append("    fill = {")
-        body.append(wrap(runs(white), "      "))
+        body.append(wrap(fill_runs, "      "))
         body.append("    },")
         body.append("    edge = {")
-        body.append(wrap(runs(dilate(white)), "      "))
+        body.append(wrap(edge_runs, "      "))
+        body.append("    },")
+        # Indexed by side, so SPRITES[type].img[WHITE] needs no branch.
+        body.append("    img = {")
+        for img in images:
+            body.append('      "%s",' % img)
         body.append("    },")
         body.append("  },")
 
@@ -143,3 +327,5 @@ if __name__ == "__main__":
             m = mask(name, "white")
             counts.append("%s %d+%d" % (name, len(runs(m)) // 3, len(runs(dilate(m))) // 3))
         print("wrote sprites into %s (runs fill+edge: %s)" % (TARGET, ", ".join(counts)))
+        print("both encodings agree with the art, for all %d pieces on both sides"
+              % len(PIECES))

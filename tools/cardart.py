@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
 """Turn the Klondike card PNGs into Lua run-length spans, in place in main.lua.
 
-Same reasoning as tools/sprites.py, which does this for the chess pieces: the
-Nspire can draw images, but the byte layout image.new() wants is documented
-only by TI and a wrong guess paints nothing at all, with no error to chase.
-fillRect is API the mock and the PNG renderer already model and already test.
+This used to say the same thing tools/sprites.py said -- that the Nspire can
+draw images but the byte layout image.new() wants is documented only by TI, so
+a wrong guess paints nothing. That reason is gone: the layout is settled, on
+hardware, and chess now blits its pieces. Klondike still does not, and the
+reason is size, which is worth writing down so nobody re-derives it:
 
-A card is different from a chess piece in one useful way: it is mostly a solid
-block of one colour. So the body is drawn as a couple of rects rather than
-encoded, the frame -- pixel-identical across all 53 sprites -- is derived once
-and drawn as eight more, and only the ink left over is run-encoded. That takes
-a 37x52 card from 1924 pixels to about 150 runs.
+  53 cards at 37x52 is 205 KB of raw TI.Image, and 721 KB once escaped into a
+  Lua source string -- 9.4x the entire 77 KB klondike bundle. Decomposing it
+  does not rescue the idea either: the pips and rank glyphs would share nicely,
+  but the twelve face cards carry unique full-card art that is ~180 KB escaped
+  on its own, and the back another 15 KB.
+
+Against that, klondike is strictly turn-based and repaints only on a key press,
+so the rects cost nothing per frame -- they cost once per keystroke. A game
+that repaints on a *timer* is the one that has to have the blit: that is why
+fruits does and this does not. Measure before changing this.
+
+A card is also different from a chess piece in one useful way: it is mostly a
+solid block of one colour. So the body is drawn as a couple of rects rather
+than encoded, the frame -- pixel-identical across all 53 sprites -- is derived
+once and drawn as eight more, and only the ink left over is run-encoded. That
+takes a 37x52 card from 1924 pixels to about 150 runs.
 
 The runs are packed into printable ASCII, three characters per run (y, x,
 length, each offset by 40 so the range lands inside 40..91 -- printable, no

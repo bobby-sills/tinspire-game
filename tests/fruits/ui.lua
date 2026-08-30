@@ -188,9 +188,7 @@ return function(t)
           nExtra = nExtra + 1
         end
       end
-      if f.powers then
-        for _ in pairs(f.powers) do powers = powers + 1 end
-      end
+      powers = powers + select(2, Frame.powers(hs))
       if not Frame.step(hs, nil, ordinary) then break end
     end
     print(string.format("  note  %d sprite beyond the seven, %d power fruit seen",
@@ -502,51 +500,55 @@ return function(t)
     ok(checked > 1000, "and checked a lot of fills (" .. checked .. ")")
   end)
 
-  test("a power fruit throbs, behind an outline of its own shape", function()
+  test("a power fruit's outline flashes, and the fruit itself does not move", function()
     local ordinary = Frame.ordinaryKinds(function() return t.boot(318, 212) end, 3)
     local hs = started(318, 212)
 
     -- A settled board with no power fruit must repaint NOT AT ALL. That is the
     -- property animating a still board is most likely to cost, and losing it
     -- means a handheld redrawing sixty-four sprites forever for nothing.
-    local f = Frame.settle(hs)
-    if not f.powers then
+    Frame.settle(hs)
+    if select(2, Frame.powers(hs)) == 0 then
       local before = hs.invalidated
       for _ = 1, 60 do hs.on.timer() end
       eq(hs.invalidated, before, "a still board with no specials asks for no frames")
     end
 
-    local withPower
+    local cell
     for _ = 1, 60 do
-      local g = Frame.settle(hs)
-      if g.powers and next(g.powers) then withPower = g break end
+      Frame.settle(hs)
+      local powers, n = Frame.powers(hs)
+      if n > 0 then cell = next(powers) break end
       if not Frame.step(hs, nil, ordinary) then break end
     end
-    ok(withPower ~= nil, "a power fruit turned up")
-    if not withPower then return end
+    ok(cell ~= nil, "a power fruit turned up")
+    if not cell then return end
 
-    ok(#withPower.halos > 0, "it is drawn behind a white outline")
-
-    -- How wide the fruit itself is drawn, over a couple of throb cycles. The
-    -- point of the whole change is that this is the FRUIT changing size, not a
-    -- box around it, so the fruit's own extent is what has to move.
-    local cell = next(withPower.powers)
-    local widths, n = {}, 0
-    for _ = 1, 60 do
-      local g = Frame.frame(hs)
+    -- Over a couple of cycles: the outline has to come and go, and the fruit
+    -- underneath has to stay exactly where and how big it was.
+    local onFrames, offFrames = 0, 0
+    local extents = {}
+    for _ = 1, 40 do
+      local f = Frame.frame(hs)
+      if f.powers and f.powers[cell] then onFrames = onFrames + 1 else offFrames = offFrames + 1 end
       local lo, hi
-      for _, item in ipairs(g.fruit) do
+      for _, item in ipairs(f.fruit) do
         if item.cell == cell then
           local o = item.op
           lo = math.min(lo or o.x, o.x)
           hi = math.max(hi or (o.x + o.w), o.x + o.w)
         end
       end
-      if lo and not widths[hi - lo] then widths[hi - lo] = true; n = n + 1 end
+      if lo then extents[(hi - lo) .. "@" .. lo] = true end
       hs.on.timer()
     end
-    print("  note  the power fruit was drawn at " .. n .. " different sizes")
-    ok(n >= 3, "the fruit itself is drawn at several sizes (" .. n .. ")")
+
+    ok(onFrames > 0, "the outline is on for some frames (" .. onFrames .. ")")
+    ok(offFrames > 0, "and off for others (" .. offFrames .. ")")
+
+    local n = 0
+    for _ in pairs(extents) do n = n + 1 end
+    eq(n, 1, "the fruit itself is drawn at one size and one place throughout")
 
     -- And a board carrying one keeps asking to be repainted.
     local before = hs.invalidated
@@ -609,6 +611,72 @@ return function(t)
        "and the frame's own brute force agrees there is nothing left")
   end)
 
+  test("the side panel never overlaps itself, at any font size", function()
+    -- The bug this exists for shipped: the panel laid its rows out with
+    -- heights written down as numbers, which were right for the font the mock
+    -- measures with and wrong for the calculator's, whose font is taller. On
+    -- real hardware the rule ran through the word SCORE and the level bar sat
+    -- on top of the word LEVEL. Nothing in the preview could see it.
+    --
+    -- So: render at font metrics up to half again as large as this container's
+    -- and insist nothing in the panel collides with anything else.
+    local BAR = { ["30,35,46"] = true, ["96,170,236"] = true }
+    local scales = { 1.0, 1.15, 1.3, 1.5 }
+
+    for _, scale in ipairs(scales) do
+      t.stub.metricsScale = scale
+      local okay, err = pcall(function()
+        local hs = started(318, 212)
+        -- Score up, so the big number is at its widest and tallest.
+        for _ = 1, 8 do if not Frame.step(hs) then break end end
+        local f, ops = Frame.frame(hs)
+        if not f.colX then return "no board" end
+        local right = f.colX[f.cols] + f.cell
+
+        -- Everything the panel drew: text boxes and the bar.
+        local boxes = {}
+        for _, o in ipairs(ops) do
+          if o.x > right then
+            if o.op == "drawString" then
+              boxes[#boxes + 1] = { y1 = o.y, y2 = o.y + t.stub.stringHeight(o.size),
+                                    what = "text " .. o.text }
+            elseif o.op == "fillRect"
+                   and BAR[o.color[1] .. "," .. o.color[2] .. "," .. o.color[3]] then
+              boxes[#boxes + 1] = { y1 = o.y, y2 = o.y + o.h, what = "the level bar" }
+            elseif o.op == "drawLine" and o.x2 > right then
+              boxes[#boxes + 1] = { y1 = o.y, y2 = o.y + 1, what = "the rule" }
+            end
+          end
+        end
+
+        if #boxes < 5 then return "only " .. #boxes .. " panel items drawn" end
+
+        for i = 1, #boxes do
+          for j = i + 1, #boxes do
+            local a, b = boxes[i], boxes[j]
+            -- The bar spans the full width, so anything sharing its rows is a
+            -- collision; two text boxes on the same row would be too, since
+            -- this panel puts one label and one value per line and they are
+            -- drawn at the same y.
+            if a.y1 < b.y2 and b.y1 < a.y2 and a.y1 ~= b.y1 then
+              return string.format("%s (%d..%d) overlaps %s (%d..%d)",
+                                   a.what, a.y1, a.y2, b.what, b.y1, b.y2)
+            end
+          end
+        end
+        return nil
+      end)
+      t.stub.metricsScale = 1
+
+      ok(okay, "scale " .. scale .. " rendered: " .. tostring(err))
+      if okay and err then
+        t.fail("at font scale " .. scale .. ": " .. err)
+        return
+      end
+    end
+    t.ok(true, "no collisions at any of the four font scales")
+  end)
+
   test("the level and its bar advance as fruit are cleared", function()
     local ordinary = Frame.ordinaryKinds(function() return t.boot(318, 212) end, 3)
     local hs = started(318, 212)
@@ -636,35 +704,6 @@ return function(t)
     end
     local lv = levelText()
     ok(lv and lv > 1, "clearing fruit levelled it up (reached " .. tostring(lv) .. ")")
-  end)
-
-  test("the game nudges a hint at a player who has stopped moving", function()
-    local hs = started(318, 212)
-    Frame.settle(hs)
-    eq(Frame.frame(hs).hint, nil, "nothing lit to begin with")
-
-    -- Idle. No input at all, just the clock.
-    local lit
-    for _ = 1, 400 do
-      hs.on.timer()
-      local f = Frame.frame(hs)
-      if f.hint then lit = f; break end
-    end
-    ok(lit ~= nil, "a hint appeared unprompted")
-    if not lit then return end
-    ok(#lit.hint == 2, "and it lights both ends of a swap")
-
-    -- Free, unlike the one asked for with H.
-    local function score()
-      local f = Frame.frame(hs)
-      for i, str in ipairs(f.text) do
-        if str == "SCORE" and f.text[i + 1] then return tonumber(f.text[i + 1]) end
-      end
-      return nil
-    end
-    local before = score()
-    for _ = 1, 200 do hs.on.timer() end
-    eq(score(), before, "and idling further costs nothing")
   end)
 
   test("pause and restart behave", function()

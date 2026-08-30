@@ -1116,14 +1116,14 @@ end
 -- rather than a button to lean on -- and never below zero.
 Fruit.HINT_COST = 20
 
--- `free` skips the charge. That is the idle nudge, not a cheaper hint: a
--- player who has stopped moving has usually stopped *seeing*, and charging
--- them for a prompt they did not ask for would be a strange thing to do.
-function Fruit:showHint(free)
+-- Always charged. There was briefly a free variant, for a nudge the game gave
+-- unasked after a spell of no input; the nudge is gone, so the parameter went
+-- with it rather than sitting here with no caller.
+function Fruit:showHint()
   if self.state ~= "playing" or self.phase ~= "idle" then return nil end
   local x1, y1, x2, y2 = self:findMove()
   if not x1 then return nil end
-  if not self.hint and not free then
+  if not self.hint then
     self.score = max(0, self.score - Fruit.HINT_COST)
   end
   self.hint = { x1 = x1, y1 = y1, x2 = x2, y2 = y2 }

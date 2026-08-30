@@ -1394,17 +1394,6 @@ test("a reset puts the level back", function()
   eq(b.levelCleared, 0, "with an empty bar")
 end)
 
-test("a free hint costs nothing, a asked-for one costs", function()
-  local b = newBoard(504)
-  b:start()
-  b.score = 500
-  ok(b:showHint(true) ~= nil, "the nudge finds a move")
-  eq(b.score, 500, "and is free")
-  b.hint = nil
-  ok(b:showHint() ~= nil, "the deliberate one finds a move too")
-  eq(b.score, 500 - Fruit.HINT_COST, "and is charged for")
-end)
-
 -- ============================================================ states, RNG ===
 
 test("the round's state machine only moves the way it should", function()

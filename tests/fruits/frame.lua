@@ -293,6 +293,25 @@ function M.settle(hs, limit)
   return M.watch(hs, nil, limit)
 end
 
+-- Which cells hold a power fruit, sampled over a whole flash cycle.
+--
+-- The outline that marks one flashes on and off, so ANY SINGLE FRAME sees
+-- either all of them or none. Reading f.powers from one frame is therefore a
+-- coin toss, and a test built on it fails intermittently rather than honestly.
+function M.powers(hs, frames)
+  local out, n = {}, 0
+  for _ = 1, frames or 26 do
+    local f = M.frame(hs)
+    if f.powers then
+      for i in pairs(f.powers) do
+        if not out[i] then out[i] = true; n = n + 1 end
+      end
+    end
+    hs.on.timer()
+  end
+  return out, n
+end
+
 function M.signature(f)
   local out = {}
   for i = 1, (f.cols or 8) * (f.rows or 8) do

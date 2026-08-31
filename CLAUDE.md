@@ -16,10 +16,13 @@ rules complicated enough that verifying them is most of the work), `wordle`
 whose correctness is the whole job), `klondike` (hidden state, unlimited undo,
 and a layout that has to adapt at paint time to how much it is asked to show),
 `slide` (a generator that has to make illegal states unrepresentable, plus
-an independent oracle for the tests to check it against) and `fruits`
+an independent oracle for the tests to check it against), `fruits`
 (match-three: the same unrepresentable-illegal-state trick, a cascade sliced
-across ticks, special pieces that change what a legal move *is*). `fruits` and
-`chess` are the two that draw with `gc:drawImage`. Between
+across ticks, special pieces that change what a legal move *is*) and
+`arkanoid` (real-time physics fast enough to tunnel through what it is meant
+to hit, a genre built on a *held* key the hardware cannot report, and sprites
+generated rather than imported). `fruits`, `chess` and `arkanoid` are the
+three that draw with `gc:drawImage`. Between
 them they cover the shapes a new game is likely to take — read whichever is closest to
 what you're building.
 
@@ -86,6 +89,14 @@ require string is always `"game"` regardless of the local's name.
   `on.escapeKey`, `on.mouseDown`. There is no key-down polling and no key-up
   event, so anything needing a *held* key routes through OS auto-repeat and
   feels laggy. Turn-based and tap-based games fit best.
+
+  When a genre needs a held key anyway, don't move on the event -- **let the
+  event open a window and move on the timer.** `src/arkanoid/game.lua` gives an
+  arrow press `PADDLE_DRIVE` frames of acceleration, and each repeat re-opens
+  it: one tap is a nudge that coasts out under friction, a held key is smooth
+  continuous travel, and nothing anywhere has to know which the player is
+  doing. Move a fixed distance per event instead and the paddle inherits the
+  auto-repeat's rate, half-second initial delay and all.
 - **No file I/O** in the sandbox. High scores last only for the session unless
   you save the document, which prompts the user on every death. Anything the
   game needs to *know* has to be compiled into the script: Wordle carries a
@@ -125,11 +136,35 @@ require string is always `"game"` regardless of the local's name.
   afterwards. Then implement the check you decided not to need anyway, purely
   as a test oracle -- `Puzzle.isSolvable` counts inversions and nothing in the
   game ever calls it -- so that two mechanisms sharing no code have to agree.
+  `arkanoid` is the same shape again: an indestructible brick ringed around a
+  breakable one is a level that can never be finished, with nothing on screen
+  to say so. So gold is only ever placed on a sublattice (`row even and column
+  = 1 mod 3`) whose members are two rows or three columns apart and therefore
+  can never touch -- every 8-connected component of gold is a single cell, one
+  cell encloses nothing, and no subset of that lattice can seal a brick in.
+  `Arkanoid.isClearable` then floods the grid from underneath and is called by
+  nothing but the tests.
   Pin the oracle first against cases whose answer follows from how they were
   built, because a backwards oracle agreeing with a backwards generator proves
   nothing. The invariant worth the most here is the third one: assert that a
   legal *move* never changes solvability, over thousands of them. That is what
   catches a move implementation quietly corrupting the board.
+- **At 20 FPS a fast small object passes straight through a thin one.** Add
+  the velocity, then look for an overlap, and Arkanoid's ball -- four pixels
+  wide, five and a half pixels of travel a frame -- misses the five-pixel
+  paddle outright some fraction of the time. The player loses a life to
+  nothing they did, which cannot be reproduced and reads as the game cheating.
+  Cut the frame into substeps shorter than the thinnest thing on the board and
+  move one axis at a time: `Arkanoid:stepBall` does both, and separating the
+  axes also settles which surface a corner-on hit bounces off, where a wrong
+  guess is a ball that reflects the wrong way once in a hundred and looks like
+  a bug rather than a rule. Then make the guarantee absolute rather than
+  statistical -- `moveAxis` abandons a move and restores the previous position
+  when it cannot resolve one, because the invariant says that position was
+  legal -- and fuzz it head-on: `tests/arkanoid/run.lua` fires a ball at
+  maximum speed at a brick, at the paddle and at a wall from every sub-pixel
+  phase of a frame.
+
 - **Anything long-running gets a copy of the state, not the live one.** A
   suspended search is suspended mid-mutation; if it shares the board with the
   renderer, `on.paint` draws its half-explored guesses. Connect Four hit this
@@ -193,7 +228,7 @@ require string is always `"game"` regardless of the local's name.
   as two different things depending on which encoding drew it.
 
 - **Whether to blit or to run is a question about size and repaint rate, and it
-  is answered by measuring, not by taste.** Both are now worked examples:
+  is answered by measuring, not by taste.** All three are worked examples:
   - `chess` blits. 12 sprites at 16x16 are 25 KB of escaped source, and a full
     board went from ~940 rects to 32 `drawImage` calls. It repaints only on a
     key, but that is *every* key, and the arrow keys move a cursor one square
@@ -204,12 +239,24 @@ require string is always `"game"` regardless of the local's name.
     twelve face cards' unique art (~180 KB) means decomposing into shared pips
     would not rescue it either. It repaints only on a key, so the rects cost
     once per keystroke. `tools/cardart.py` carries the working.
+  - `arkanoid` blits, and needed no art pipeline at all to do it. A wall is up
+    to 104 bricks repainted twenty times a second; measured on level 1, the
+    whole frame is 137 draw calls and 29 colour changes as rectangles against
+    85 and 24 as sprites, and on the fullest wall 241 against 137. But a brick
+    is not art -- it is a bevelled rectangle in one of eleven inks -- so
+    `src/arkanoid/main.lua` builds the TI.Images itself at load, out of the
+    same palette the fallback fills, in about forty lines. **If the art is
+    procedural, generate the sprites at runtime rather than baking them.**
+    Chess pays 25 KB of escaped source for twelve pieces; these cost nothing in
+    the bundle, and a window the computer software resized just rebuilds them
+    at the new brick size instead of dropping to the fallback. Rows repeat, so
+    a sprite is a handful of `string.rep` calls and not a loop over pixels.
 
   So: a flat shape is already one call and gains nothing from an image; art
   that repaints on a timer should almost always be blitted; art that repaints
   on a key should be blitted if it fits. Everything else here -- `snake`,
   `flappy`, `2048`, `connect4`, `wordle`, `slide` -- draws 90 rects a frame or
-  fewer and has nothing to win. Measured, per frame, across all nine games.
+  fewer and has nothing to win. Measured, per frame, across all ten games.
 
 - **When runs are the answer, group them by colour**, because the colour change
   is the expensive part, not the rect. `tools/sprites.py` still emits its runs
@@ -267,9 +314,9 @@ require string is always `"game"` regardless of the local's name.
   value and the launch-to-launch repeat never appears. To test seeding, nil out
   `os` and pin `math.random` to a constant first — `tests/wordle/ui.lua`'s
   `withSandbox` does exactly that, and fails on the old code.
-- `slide` and `fruits` own their generators the same way and for the same
-  reason: a board that deals the identical opening at every launch is that bug
-  wearing different clothes. The other six games still seed with
+- `slide`, `fruits` and `arkanoid` own their generators the same way and for
+  the same reason: a board that deals the identical opening at every launch is
+  that bug wearing different clothes. The other six games still seed with
   `math.randomseed(os.time() + ...)` and so deal the same opening every launch
   on hardware.
 - **Owning the generator is only half of it -- deal at the right moment too.**

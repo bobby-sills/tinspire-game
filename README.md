@@ -1,6 +1,6 @@
 # Games for the TI-Nspire CX II
 
-Nine games written in TI-Nspire Lua. They install by drag-and-drop — **no
+Ten games written in TI-Nspire Lua. They install by drag-and-drop — **no
 Ndless, no jailbreak, no root**. Each `.tns` is an ordinary TI-Nspire document
 that happens to contain a Lua script, so the OS runs it in its built-in sandbox
 exactly like a TI-authored one.
@@ -15,7 +15,8 @@ Grab the ones you want and copy them onto your calculator:
 [`Wordle.tns`](Wordle.tns) ·
 [`Klondike.tns`](Klondike.tns) ·
 [`Slide.tns`](Slide.tns) ·
-[`Fruits.tns`](Fruits.tns)
+[`Fruits.tns`](Fruits.tns) ·
+[`Arkanoid.tns`](Arkanoid.tns)
 
 ## Installing
 
@@ -125,6 +126,22 @@ the ones above fall in, and whatever lands may line up again. Pick a fruit up
 with `enter` and press a direction to swap it. Longer matches leave special
 fruit behind, and cascades multiply the score up to x12. `H` lights a swap that
 works, for 20 points.
+
+### Arkanoid
+
+![Title screen](docs/screenshots/arkanoid-title.png)
+![In play](docs/screenshots/arkanoid-playing.png)
+
+Break the wall. Left and right steer the Vaus, or click the column you want it
+in; `enter` serves, fires the laser and lets a caught ball go. Where the ball
+lands on the paddle sets the angle it leaves at, so the red rims are full
+deflection and the middle sends it straight back up.
+
+Broken bricks drop capsules — **E**nlarge, **C**atch, **L**aser, **S**low,
+**D**isruption for three balls at once and **P**layer for an extra life. Silver
+bricks take several hits and get tougher every eight levels; gold ones never
+break at all, and are placed so they can never seal a brick in. Eight
+hand-drawn levels, then generated ones for as long as you last.
 
 ## Building it yourself
 

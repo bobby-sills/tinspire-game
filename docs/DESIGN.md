@@ -989,6 +989,177 @@ board produced different handles and looked different. Fixing the mock to
 number images per document, which is what the calculator does, turned a test
 that could not fail into one that did.
 
+## Arkanoid
+
+![Title screen](screenshots/arkanoid-title.png)
+![In play](screenshots/arkanoid-playing.png)
+
+Break the wall. The rules are in `src/arkanoid/game.lua` and the drawing in
+`src/arkanoid/main.lua`, and like Flappy the whole timing model is one fixed
+timestep per host tick — no delta time, no accumulator, every constant already
+expressed per frame. Three things about the genre fight the hardware, and each
+of them decided a piece of the design.
+
+### A held key the calculator cannot report
+
+Arkanoid is a game about holding left. The Nspire has no key-down polling and
+no key-up event, so a held arrow reaches a script only as the OS's auto-repeat:
+one press, a pause of about half a second, then a stream. Move the paddle a
+fixed distance per event and the paddle *is* that stutter — it lurches, waits,
+then skitters.
+
+So an arrow press does not move the paddle. It opens a window:
+`Arkanoid:steer` sets a direction and `PADDLE_DRIVE` frames of acceleration,
+and the paddle is advanced by the timer, not by the key. A single tap
+accelerates for a quarter of a second and then coasts out under friction, which
+is a nudge worth about a third of the screen. A held key has each repeat re-open
+the window before the last one closes, which is smooth continuous travel at
+`PADDLE_MAX`. Neither this file nor the renderer has to know which one the
+player is doing, and the difference between the two is only how often the
+window is refreshed.
+
+Clicking is the other control, and it is absolute: the click sets a target
+column and the paddle *drives* there under the same acceleration rather than
+appearing there, so the touchpad cannot rescue a ball the paddle could never
+have reached.
+
+### A ball fast enough to pass through the paddle
+
+The ball is four pixels wide and travels up to 5.6 pixels a frame. The paddle
+is five pixels thick. Integrate the naive way — add the velocity, then look for
+an overlap — and some fraction of the time the ball is above the paddle on one
+frame and below it on the next, having never overlapped it. The player loses a
+life to nothing they did, it cannot be reproduced, and it reads as the game
+cheating.
+
+`Arkanoid:stepBall` cuts each frame into substeps of at most `SUBSTEP` = 1.5
+pixels, which is below the thinnest thing on the board, so the ball is checked
+against the world at least once inside everything it passes through. That makes
+tunnelling impossible rather than unlikely. Within a substep the axes move
+separately, which also settles a second question: which surface a corner-on hit
+should bounce off. Moving both axes at once leaves that ambiguous, and a wrong
+guess there is a ball that reflects the wrong way once in a hundred hits — too
+rare to be a rule, frequent enough to be noticed.
+
+The guarantee is then made absolute rather than statistical. `moveAxis` backs
+the ball out to the surface it hit, but a ball wedged between two things — the
+paddle sweeping it into a wall — can have nowhere legal within reach. Rather
+than let a frame of that leak into the next and compound, the move is abandoned
+and the ball is put back where it started, which the invariant says was legal.
+
+`tests/arkanoid/run.lua` attacks this head-on: it fires a ball at maximum speed
+at a brick, at the paddle and at a wall from every sub-pixel phase of a frame
+and from a range of angles, and asserts nothing ever gets past. A long fuzzed
+rally then re-checks the same invariants every frame — inside the walls, not
+inside a brick, not inside the paddle — over tens of thousands of frames.
+
+### Levels that can never be finished
+
+Gold bricks never break. A gold ring around a breakable brick is a level that
+can never be cleared, and there is nothing on screen to say so: the player
+grinds a perfect run into a board that was never winnable. That is the sliding
+puzzle's unsolvable-scramble problem in a different costume, and it gets the
+same answer — don't filter the bad levels out, make them unrepresentable.
+
+Sealing a region needs a closed barrier of gold, and a barrier is a chain of
+cells each touching the next, diagonally included, since two diagonal blockers
+already sever a four-connected path. So gold is only ever placed on the
+sublattice `row even AND column = 1 (mod 3)`, whose members are two rows or
+three columns apart and therefore can never touch. Every 8-connected component
+of gold is one cell, one cell encloses nothing, and no subset of that lattice
+can seal a brick in. There is nothing to check and nothing to reject.
+
+Row 1 is odd, so it is never on the lattice, and every generated pattern fills
+it — which is what guarantees a generated level always has something breakable
+in it, however the gold falls.
+
+`Arkanoid.isClearable` is then the check the generator was built not to need,
+and nothing in the game ever calls it. It floods the grid from underneath — the
+brick field spans the interior wall to wall, so the only way in is from below —
+through any cell that is not gold, and asks whether every destructible brick
+was reached. The tests pin it first against hand-drawn boards whose answer
+follows from how they are drawn (a brick ringed in gold: no; the same ring with
+its corners open: yes; a full gold row: seals everything above it), because a
+backwards oracle agreeing with a backwards generator proves nothing. Then it
+runs over all eight authored levels and three thousand generated ones, and a
+separate test asserts the lattice property directly, so two mechanisms sharing
+no code have to agree.
+
+### Drawing a wall a hundred bricks wide
+
+![A capsule falling](screenshots/arkanoid-capsule.png)
+![Level cleared](screenshots/arkanoid-cleared.png)
+
+A wall is up to 13 x 8 bricks and the screen is repainted twenty times a
+second, so how a brick is drawn is the only drawing decision here that matters.
+Measured on this container, painting level 1 at the handheld's own 318x212,
+whole frame including chrome and text:
+
+| encoding | draw calls | colour changes |
+| --- | --- | --- |
+| rectangles | 137 | 29 |
+| `gc:drawImage` | 85 | 24 |
+
+and on the fullest wall the game paints, 241 against 137. A brick is one call
+instead of two and needs no colour change at all, which is the half that
+actually costs. Same trade Chess made for its pieces and Klondike refused for
+its cards.
+
+What is different from both is that **a brick is not art**. It is a bevelled
+rectangle in one of eleven inks, so there is nothing to import and no
+`tools/*art.py` to write: `main.lua` builds the TI.Images itself at load, out
+of the same palette the fallback fills, in about forty lines. Chess pays 25 KB
+of escaped source for its twelve pieces; these cost nothing in the bundle. And
+because they are generated from the current geometry, a window the computer
+software has resized simply rebuilds them at the new brick size rather than
+dropping to the fallback. Rows repeat, so a sprite is a handful of `string.rep`
+calls and not a loop over pixels.
+
+The fallback is still there and still complete: `image.new` is called inside a
+`pcall`, and if anything at all goes wrong the rectangles take over — all of
+the bricks or none of them, because half a wall in each encoding reads as a bug
+rather than as a fallback. `tests/arkanoid/ui.lua` boots the game twice, once
+with `image.new` refused, and asserts the two encodings paint every brick in
+the same place, at the same size and in the same ink.
+
+That comparison only works because the colours are keyed at the handheld's own
+depth. TI.Image holds five bits a channel, so a blitted brick comes back up to
+7/255 from where it started; at eight bits the same brick reads as two
+different bricks depending on which path drew it. `tests/arkanoid/frame.lua`
+reduces before comparing, and a test asserts that no two of the thirty-two
+colours `main.lua` fills with collide once reduced — `{230,74,68}` and
+`{228,72,64}` are one colour on a calculator.
+
+### Capsules, and what they cost
+
+Six capsules fall from broken bricks: Enlarge, Catch, Laser, Slow, Disruption
+(three balls) and Player (an extra life). Enlarge, Catch and Laser share one
+slot, so taking one drops the last — which is what makes running for a capsule
+a decision rather than an accumulation.
+
+Catch is the one that needed care. Holding the ball until the player shoots it
+off is the whole point of the capsule, but a held ball is a stopped game, and
+an autopilot that never presses fire showed exactly how bad that is: every
+bounce parked the ball for as long as it was allowed to. It now lets go on its
+own after two seconds, which is a rest rather than a stall.
+
+### Pace, which is the part a container cannot judge
+
+Everything that decides how the game *feels* is in one marked block at the top
+of `game.lua`, because none of it can be settled from here. Speed is bounded
+above by legibility rather than by physics — at 20 FPS a 4-pixel ball moving
+more than about six pixels a frame stops reading as an object and starts
+reading as a flicker — and bounded below by patience.
+
+The number that mattered most was not the base speed but the wind-up. Breakout's
+failure mode is not the opening, it is the last four bricks, where the wall no
+longer gets in the way and every trip is the full height of the playfield for
+one hit. The ball therefore gains speed with every brick it breaks, and again
+once two thirds of the wall is down. Driving a paddle-tracking autopilot
+through the first nine levels, that took the worst level from about eleven
+minutes to about five. It is self-limiting, too: the ball can only get there by
+clearing the wall.
+
 ## Building it yourself
 
 You only need this if you want to change a game; the committed `.tns` files
@@ -1004,6 +1175,7 @@ make GAME=wordle               # build Wordle.tns
 make GAME=klondike             # build Klondike.tns
 make GAME=slide                # build Slide.tns
 make GAME=fruits               # build Fruits.tns
+make GAME=arkanoid             # build Arkanoid.tns
 make GAME=flappy test          # that game's logic + runtime tests
 make GAME=flappy screenshots   # preview PNGs -> build/flappy/screenshots
 make all-games                 # build everything under src/
@@ -1191,11 +1363,11 @@ itself before neutralising `randomseed`, so every test saw fresh values. It
 took playing the `.tns` on a real calculator to see it, and the fix was to stop
 using `math.random` for the answer at all.
 
-Slide and Fruits were written after that and own their generators from the
-start, for the same reason: a puzzle that deals the identical scramble every
-time the document is opened is the same bug wearing different clothes. The
-remaining six games still seed the old way, so on hardware they will deal the
-same opening every launch — the same food, the same pipes, the same tiles.
+Slide, Fruits and Arkanoid were written after that and own their generators
+from the start, for the same reason: a puzzle that deals the identical scramble
+every time the document is opened is the same bug wearing different clothes.
+The remaining six games still seed the old way, so on hardware they will deal
+the same opening every launch — the same food, the same pipes, the same tiles.
 
 The rest of what only real hardware can settle:
 
@@ -1233,6 +1405,15 @@ The rest of what only real hardware can settle:
   factor is badly wrong the cascade animates more slowly rather than freezing —
   the phase machine counts ticks, not wall clock — and the game stays correct
   and responsive either way.
+- **Whether Arkanoid feels right.** The ball speed, the paddle's acceleration
+  and friction, the drive window an arrow key opens and the rate capsules drop
+  at are all in one marked block at the top of `src/arkanoid/game.lua`, and all
+  of them were tuned against an autopilot rather than a thumb. The autopilot
+  says a level takes two to five minutes; a person angling the ball into the
+  wall should be faster, and a person fighting the auto-repeat may be slower.
+  Whether the drive window is the right length is the single thing here most in
+  need of a real calculator, because the OS's auto-repeat rate is not a number
+  this container can find out.
 - **Whether the font has chess glyphs.** It is not verified that the Nspire's
   font carries U+2654–U+265F, and a missing glyph on this OS is a silent empty
   box — which across sixty-four squares would be unreadable rather than merely
